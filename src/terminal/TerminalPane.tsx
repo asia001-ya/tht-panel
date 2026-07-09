@@ -137,7 +137,7 @@ export function TerminalPane({ sessionId }: TerminalPaneProps): React.JSX.Elemen
     });
     void channel; // Channel 生命周期随 detach 释放，无需显式引用
 
-    // 用户输入回写到 PTY + 首次 Enter 检测（自动命名会话）
+    // 用户输入回写到 PTY + 首次有内容的指令检测（自动命名会话）
     let inputBuf = "";
     let named = false; // 本次 attach 是否已完成命名
     const dataDisp = term.onData((d) => {
@@ -145,26 +145,30 @@ export function TerminalPane({ sessionId }: TerminalPaneProps): React.JSX.Elemen
       // 仅对 pendingSessions 中登记的（未命名的）会话追踪首次输入
       if (!named && pendingSessions.has(sessionId)) {
         if (d.includes("\r") || d.includes("\n")) {
-          // 用户按了 Enter：用之前攒的内容作为会话名称
-          named = true;
-          const name = inputBuf.trim().slice(0, 80) || "新会话";
-          window.dispatchEvent(
-            new CustomEvent("app:session-named", { detail: { sessionId, name } }),
-          );
+          // 用户按了 Enter：只在有实际内容时才命名（忽略空行 Enter）
+          const trimmed = inputBuf.trim().slice(0, 80);
+          if (trimmed) {
+            named = true;
+            window.dispatchEvent(
+              new CustomEvent("app:session-named", { detail: { sessionId, name: trimmed } }),
+            );
+          }
+          inputBuf = ""; // 清空等下一行（用户可能先按了空 Enter）
         } else if (d === "\x7f" || d === "\b") {
-          // 退格：删除最后一个字符
           inputBuf = inputBuf.slice(0, -1);
         } else if (d.length === 1 && d >= " ") {
-          // 可见字符追加到缓冲
           inputBuf += d;
-        }
-        // 粘贴（d.length>1 且含回车）也视为首次发送
-        if (!named && d.length > 1 && (d.includes("\r") || d.includes("\n"))) {
-          named = true;
-          const firstLine = (inputBuf + d).split(/[\r\n]/)[0].trim().slice(0, 80) || "新会话";
-          window.dispatchEvent(
-            new CustomEvent("app:session-named", { detail: { sessionId, name: firstLine } }),
-          );
+        } else if (!named && d.length > 1) {
+          // 粘贴：提取首个非空行
+          const lines = (inputBuf + d).split(/[\r\n]/);
+          const firstLine = lines.find((l) => l.trim())?.trim().slice(0, 80);
+          if (firstLine) {
+            named = true;
+            window.dispatchEvent(
+              new CustomEvent("app:session-named", { detail: { sessionId, name: firstLine } }),
+            );
+          }
+          inputBuf = "";
         }
       }
     });
@@ -175,6 +179,8 @@ export function TerminalPane({ sessionId }: TerminalPaneProps): React.JSX.Elemen
 
     // attach 后主动对齐一次尺寸：不同 leaf 尺寸不同，否则 TUI 排版错位
     void ptyResize(sessionId, Math.max(2, term.cols), Math.max(2, term.rows));
+    // 自动聚焦终端，让用户无需点击即可输入
+    term.focus();
 
     return () => {
       dead = true; // 置失效标志，拦截后续晚到的 Channel 消息

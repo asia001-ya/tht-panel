@@ -77,7 +77,7 @@ impl Default for GlobalConfig {
         Self {
             theme: "dark".to_string(),
             shell_path: "pwsh.exe".to_string(),
-            font_size: 14,
+            font_size: 13,
             scrollback_bytes: 5 * 1024 * 1024,
             scrollback_lines: 10000,
             notify_on_waiting: true,

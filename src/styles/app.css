@@ -17,10 +17,10 @@ body,
 }
 
 body {
-  font-family: "Segoe UI", "Microsoft YaHei", system-ui, sans-serif;
+  font-family: "Inter", "Segoe UI", "Microsoft YaHei", system-ui, sans-serif;
   background: var(--bg);
   color: var(--fg);
-  font-size: 14px;
+  font-size: 13px;
 }
 
 button {

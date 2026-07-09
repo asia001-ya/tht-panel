@@ -71,7 +71,7 @@ pub fn build_resolved_launch(
     if kind == "shell" {
         return Ok(ResolvedLaunch {
             program,
-            args: vec!["-NoLogo".to_string()],
+            args: vec!["-NoLogo".to_string(), "-ExecutionPolicy".to_string(), "Bypass".to_string()],
             cwd,
             env: Vec::new(),
             title: "PowerShell".to_string(),
@@ -168,6 +168,8 @@ pub fn build_resolved_launch(
     let args = vec![
         "-NoLogo".to_string(),
         "-NoExit".to_string(),
+        "-ExecutionPolicy".to_string(),
+        "Bypass".to_string(),
         "-EncodedCommand".to_string(),
         encoded,
     ];

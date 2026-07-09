@@ -36,13 +36,12 @@ export function createTerm(opts: {
   theme: "light" | "dark";
 }): CreateTermResult {
   const term = new Terminal({
-    // 字体栈：Consolas 打底 + 微软雅黑等宽保证中文对齐（风险 4）
-    fontFamily: 'Consolas, "Microsoft YaHei Mono", monospace',
+    fontFamily: '"JetBrains Mono", "Cascadia Code", "Fira Code", Consolas, "Microsoft YaHei Mono", monospace',
     fontSize: opts.fontSize,
     scrollback: opts.scrollbackLines,
     theme: xtermThemeFor(opts.theme),
-    cursorBlink: true,
-    // Unicode11Addon.activeVersion 依赖 proposed API，必须开启
+    cursorBlink: false,
+    cursorStyle: "bar",
     allowProposedApi: true,
   });
 
