@@ -1,0 +1,41 @@
+/* 主题变量：浅色/深色两套。组件样式只引用变量，切换 data-theme 即换肤。
+   注意：xterm 终端配色在 src/terminal/themes.ts 另有一套 ITheme，需与此处 --term-* 同源同步修改。 */
+
+:root,
+:root[data-theme="dark"] {
+  --bg: #1e1e2e;
+  --panel: #181825;
+  --panel-2: #11111b;
+  --border: #313244;
+  --fg: #cdd6f4;
+  --fg-dim: #a6adc8;
+  --fg-faint: #6c7086;
+  --accent: #89b4fa;
+  --accent-weak: #45475a;
+  --danger: #f38ba8;
+  --badge-running: #a6e3a1;
+  --badge-waiting: #f9e2af;
+  --badge-idle: #6c7086;
+  --badge-dead: #f38ba8;
+  /* 终端背景，须与 themes.ts darkXterm.background 同色 */
+  --term-bg: #1e1e2e;
+}
+
+:root[data-theme="light"] {
+  --bg: #eff1f5;
+  --panel: #e6e9ef;
+  --panel-2: #dce0e8;
+  --border: #ccd0da;
+  --fg: #4c4f69;
+  --fg-dim: #5c5f77;
+  --fg-faint: #8c8fa1;
+  --accent: #1e66f5;
+  --accent-weak: #bcc0cc;
+  --danger: #d20f39;
+  --badge-running: #40a02b;
+  --badge-waiting: #df8e1d;
+  --badge-idle: #9ca0b0;
+  --badge-dead: #d20f39;
+  /* 终端背景，须与 themes.ts lightXterm.background 同色 */
+  --term-bg: #eff1f5;
+}

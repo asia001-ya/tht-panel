@@ -1,0 +1,30 @@
+[package]
+name = "tht-panel"
+version = "0.1.0"
+description = "多工作空间 AI 终端面板管理器"
+authors = ["you"]
+edition = "2021"
+
+[lib]
+# `_lib` 后缀避免与 bin 名冲突（Windows 上的已知问题）
+name = "tht_panel_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+# Tauri 核心：tray-icon 提供系统托盘，image-png 让托盘可用 PNG 图标
+tauri = { version = "2", features = ["tray-icon", "image-png"] }
+tauri-plugin-dialog = "2"          # 选择项目目录的原生对话框
+tauri-plugin-notification = "2"    # Windows 系统通知（等待输入提醒）
+tauri-plugin-single-instance = "2" # 防多开（多开会导致双托盘 + 配置写冲突）
+portable-pty = "0.9"               # ConPTY 封装（wezterm 系），持有所有 PTY 会话
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+uuid = { version = "1", features = ["v4"] } # 会话 ID
+parking_lot = "0.12"               # 无毒化 Mutex，比 std 更简洁
+thiserror = "2"                    # 错误类型
+chrono = { version = "0.4", features = ["serde"] } # 时间戳
+base64 = "0.22"                    # PowerShell -EncodedCommand 编码
+dirs = "6"                         # 定位 ~/.claude、~/.codex
