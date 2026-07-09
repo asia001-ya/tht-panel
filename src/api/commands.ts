@@ -61,3 +61,6 @@ export const managedSessionUpdate = (session: ManagedSession) =>
   invoke<void>("managed_session_update", { session });
 export const managedSessionDelete = (id: string) =>
   invoke<void>("managed_session_delete", { id });
+export const aiSessionDetect = (args: {
+  workspaceId: string; kind: string; spawnedAt: string; exclude: string[];
+}) => invoke<string | null>("ai_session_detect", args);

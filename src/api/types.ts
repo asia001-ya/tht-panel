@@ -23,6 +23,13 @@ export interface AgentConfig {
   extraArgs?: string[]; // 附加命令行参数，逐项追加
 }
 
+/** Keep-alive 配置 */
+export interface KeepAliveConfig {
+  enabled: boolean;
+  command: string;
+  intervalMin: number;
+}
+
 /** 工作空间：名称 + 项目目录 + AI 类型 + 配置模式 */
 export interface Workspace {
   id: string; // uuid
@@ -33,6 +40,7 @@ export interface Workspace {
   config?: AgentConfig; // 独立配置（useGlobalConfig=false 时生效）
   sortOrder: number; // 侧边栏顺序，Ctrl+1..9 依此序
   createdAt: string;
+  keepAlive?: KeepAliveConfig;
 }
 
 /** 全局配置 */
@@ -61,8 +69,9 @@ export interface SplitNode {
 export interface LeafNode {
   type: "leaf";
   id: string;
-  sessionId: string | null; // 运行时绑定的 PTY 会话；null=空占位
-  locked: boolean; // 锁定：工作空间切换不替换此分屏内容
+  sessionIds: string[];            // Tab 顺序（先开在前）
+  activeSessionId: string | null;  // 当前激活 Tab；null=空占位
+  locked: boolean;                 // 锁定：不接受新 Tab
 }
 
 /** 持久化到 layout.json 的 leaf（sessionId 易失，只存骨架） */

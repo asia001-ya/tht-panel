@@ -27,6 +27,7 @@ function parseExtraArgs(text: string): string[] {
 function SettingsForm({ config }: { config: GlobalConfig }) {
   const closeSettings = useUiStore((s) => s.closeSettings);
   const update = useSettingsStore((s) => s.update);
+  const setTheme = useSettingsStore((s) => s.setTheme);
 
   // extraArgs 用本地文本态承载，避免每次 split/join 丢失正在输入的换行
   const [claudeArgs, setClaudeArgs] = useState((config.claudeDefaults.extraArgs ?? []).join("\n"));
@@ -69,6 +70,34 @@ function SettingsForm({ config }: { config: GlobalConfig }) {
         </div>
 
         <div className="dialog-body">
+          {/* 外观 */}
+          <fieldset className="dialog-group">
+            <legend className="dialog-group-title">外观</legend>
+            <div className="dialog-field">
+              <label className="dialog-label">主题</label>
+              <div className="dialog-radio-group">
+                <label className="dialog-radio">
+                  <input
+                    type="radio"
+                    name="theme"
+                    checked={config.theme === "light"}
+                    onChange={() => setTheme("light")}
+                  />
+                  浅色
+                </label>
+                <label className="dialog-radio">
+                  <input
+                    type="radio"
+                    name="theme"
+                    checked={config.theme === "dark"}
+                    onChange={() => setTheme("dark")}
+                  />
+                  深色
+                </label>
+              </div>
+            </div>
+          </fieldset>
+
           {/* claude 默认配置 */}
           <fieldset className="dialog-group">
             <legend className="dialog-group-title">claude 统一配置</legend>

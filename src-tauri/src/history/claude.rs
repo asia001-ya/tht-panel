@@ -135,7 +135,7 @@ pub fn list(
 /// 例：`D:\AI\register` → `D--AI-register`。（对 `/` 也归一以兼容前端传入正斜杠路径。）
 /// 参数 `path`：工作空间绝对路径。
 /// 返回：slug 字符串。
-fn slugify(path: &str) -> String {
+pub(crate) fn slugify(path: &str) -> String {
     path.trim_end_matches(['\\', '/'])
         .replace(':', "-")
         .replace(['\\', '/'], "-")

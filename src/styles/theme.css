@@ -1,41 +1,72 @@
-/* 主题变量：浅色/深色两套。组件样式只引用变量，切换 data-theme 即换肤。
-   注意：xterm 终端配色在 src/terminal/themes.ts 另有一套 ITheme，需与此处 --term-* 同源同步修改。 */
+/* 设计令牌：Codex 风格双主题。浅色为默认。
+   xterm 终端配色在 src/terminal/themes.ts 另有 ITheme，--term-bg 须与其 background 同值。 */
 
 :root,
-:root[data-theme="dark"] {
-  --bg: #1e1e2e;
-  --panel: #181825;
-  --panel-2: #11111b;
-  --border: #313244;
-  --fg: #cdd6f4;
-  --fg-dim: #a6adc8;
-  --fg-faint: #6c7086;
-  --accent: #89b4fa;
-  --accent-weak: #45475a;
-  --danger: #f38ba8;
-  --badge-running: #a6e3a1;
-  --badge-waiting: #f9e2af;
-  --badge-idle: #6c7086;
-  --badge-dead: #f38ba8;
-  /* 终端背景，须与 themes.ts darkXterm.background 同色 */
-  --term-bg: #1e1e2e;
+:root[data-theme="light"] {
+  /* 表面 */
+  --bg: #ffffff;
+  --sidebar-bg: #f2f0ef;
+  --sidebar-hover: #e9e6e4;
+  --sidebar-active: #e2dfdc;
+  --panel: #ffffff;
+  --panel-2: #f6f5f4;
+  --hover: #f2f1f0;
+  /* 边框 */
+  --border: #e8e6e3;
+  --border-strong: #d9d6d2;
+  /* 文字 */
+  --fg: #1a1a18;
+  --fg-dim: #6e6b68;
+  --fg-faint: #a3a09b;
+  /* 强调（单色美学） */
+  --accent: #1a1a18;
+  --accent-fg: #ffffff;
+  --focus-ring: rgba(26, 26, 24, 0.24);
+  /* 语义色 */
+  --danger: #d93025;
+  --warning: #c4681a;
+  --badge-running: #10a37f;
+  --badge-waiting: #e8a33d;
+  --badge-idle: #b6b3af;
+  --badge-dead: #d93025;
+  /* 终端背景（须与 themes.ts lightXterm.background 同值） */
+  --term-bg: #ffffff;
+  /* 圆角 */
+  --radius-sm: 6px;
+  --radius-md: 10px;
+  --radius-lg: 16px;
+  --radius-xl: 24px;
+  /* 投影 */
+  --shadow-1: 0 1px 2px rgba(0, 0, 0, 0.05), 0 4px 16px rgba(0, 0, 0, 0.06);
+  --shadow-2: 0 8px 32px rgba(0, 0, 0, 0.14);
+  /* 字体 */
+  --font-ui: "Segoe UI Variable Text", "Segoe UI", "Microsoft YaHei", system-ui, sans-serif;
 }
 
-:root[data-theme="light"] {
-  --bg: #eff1f5;
-  --panel: #e6e9ef;
-  --panel-2: #dce0e8;
-  --border: #ccd0da;
-  --fg: #4c4f69;
-  --fg-dim: #5c5f77;
-  --fg-faint: #8c8fa1;
-  --accent: #1e66f5;
-  --accent-weak: #bcc0cc;
-  --danger: #d20f39;
-  --badge-running: #40a02b;
-  --badge-waiting: #df8e1d;
-  --badge-idle: #9ca0b0;
-  --badge-dead: #d20f39;
-  /* 终端背景，须与 themes.ts lightXterm.background 同色 */
-  --term-bg: #eff1f5;
+:root[data-theme="dark"] {
+  --bg: #212121;
+  --sidebar-bg: #171717;
+  --sidebar-hover: #242424;
+  --sidebar-active: #2d2d2d;
+  --panel: #2a2a2a;
+  --panel-2: #303030;
+  --hover: #2e2e2e;
+  --border: #313131;
+  --border-strong: #464646;
+  --fg: #ececec;
+  --fg-dim: #b4b4b4;
+  --fg-faint: #7d7d7d;
+  --accent: #ececec;
+  --accent-fg: #171717;
+  --focus-ring: rgba(236, 236, 236, 0.28);
+  --danger: #f47067;
+  --warning: #e8a33d;
+  --badge-running: #10a37f;
+  --badge-waiting: #e8a33d;
+  --badge-idle: #6e6e6e;
+  --badge-dead: #f47067;
+  /* 终端背景（须与 themes.ts darkXterm.background 同值） */
+  --term-bg: #212121;
+  --shadow-1: 0 1px 2px rgba(0, 0, 0, 0.4), 0 4px 16px rgba(0, 0, 0, 0.35);
+  --shadow-2: 0 8px 32px rgba(0, 0, 0, 0.5);
 }

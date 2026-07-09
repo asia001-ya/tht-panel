@@ -25,6 +25,18 @@ pub struct AgentConfig {
     pub extra_args: Vec<String>,
 }
 
+/// Keep-alive 配置：定时向活跃会话发送指令防止超时。
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct KeepAliveConfig {
+    /// 是否启用
+    pub enabled: bool,
+    /// 发送的指令文本
+    pub command: String,
+    /// 发送间隔（分钟）
+    pub interval_min: u32,
+}
+
 /// 工作空间：名称 + 项目目录 + AI 类型 + 配置模式。
 /// 落盘于 workspaces.json，加 `#[serde(default)]` 容忍字段演进。
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -46,6 +58,8 @@ pub struct Workspace {
     pub sort_order: i64,
     /// 创建时间戳
     pub created_at: String,
+    /// Keep-alive 配置
+    pub keep_alive: Option<KeepAliveConfig>,
 }
 
 /// 全局配置，落盘于 settings.json。
@@ -75,7 +89,7 @@ impl Default for GlobalConfig {
     /// 参数：无；返回：带默认值的 GlobalConfig。
     fn default() -> Self {
         Self {
-            theme: "dark".to_string(),
+            theme: "light".to_string(),
             shell_path: "pwsh.exe".to_string(),
             font_size: 13,
             scrollback_bytes: 5 * 1024 * 1024,

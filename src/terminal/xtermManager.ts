@@ -36,7 +36,7 @@ export function createTerm(opts: {
   theme: "light" | "dark";
 }): CreateTermResult {
   const term = new Terminal({
-    fontFamily: '"JetBrains Mono", "Cascadia Code", "Fira Code", Consolas, "Microsoft YaHei Mono", monospace',
+    fontFamily: '"JetBrains Mono", Consolas, "Cascadia Mono", monospace',
     fontSize: opts.fontSize,
     scrollback: opts.scrollbackLines,
     theme: xtermThemeFor(opts.theme),

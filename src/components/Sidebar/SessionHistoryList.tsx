@@ -1,27 +1,18 @@
 /**
  * SessionHistoryList.tsx —— 工作空间展开时显示的自管会话列表。
- * 数据源：tht-panel 自己持久化的 sessions.json（不再依赖 claude/codex 写文件）。
- * 每次展开自动刷新；支持会话重命名（双击名称进入编辑）、删除。
  */
 import { useEffect, useState } from "react";
 import type { Workspace, ManagedSession } from "../../api/types";
 import { useWorkspaceStore } from "../../store/workspaceStore";
 import { managedSessionUpdate, managedSessionDelete } from "../../api/commands";
+import { ContextMenu } from "../ui/ContextMenu";
+import { X } from "../ui/icons";
 
-/** SessionHistoryList 组件对外 props */
 export interface SessionHistoryListProps {
   ws: Workspace;
-  /** 点击会话条目：激活/恢复该会话 */
   onResume: (wsId: string, session: ManagedSession) => void;
-  /** 点击「+ 新会话」：无条件新建一个 AI 会话 */
-  onNewSession: (wsId: string) => void;
 }
 
-/**
- * 把 ISO 时间字符串格式化为中文相对时间。
- * @param iso ISO 时间字符串
- * @returns 相对时间文案
- */
 function relativeTime(iso: string): string {
   const t = Date.parse(iso);
   if (Number.isNaN(t)) return "";
@@ -36,25 +27,18 @@ function relativeTime(iso: string): string {
   return new Date(t).toLocaleDateString();
 }
 
-/**
- * 自管会话列表组件。
- * @param props 见 SessionHistoryListProps
- * @returns 会话列表 JSX
- */
 export function SessionHistoryList({
   ws,
   onResume,
-  onNewSession,
 }: SessionHistoryListProps): React.JSX.Element {
   const entries = useWorkspaceStore((s) => s.historyCache[ws.id]) as ManagedSession[] | undefined;
   const loading = useWorkspaceStore((s) => s.historyLoading[ws.id] ?? false);
   const loadHistory = useWorkspaceStore((s) => s.loadHistory);
 
-  // 正在重命名的会话 id
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editName, setEditName] = useState("");
+  const [menu, setMenu] = useState<{ x: number; y: number; entry: ManagedSession } | null>(null);
 
-  // 每次展开（挂载）时都刷新
   useEffect(() => {
     if (!loading) {
       void loadHistory(ws.id);
@@ -62,19 +46,11 @@ export function SessionHistoryList({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [ws.id]);
 
-  /** 刷新按钮 */
-  const onRefresh = (e: React.MouseEvent): void => {
-    e.stopPropagation();
-    void loadHistory(ws.id);
-  };
-
-  /** 双击进入重命名模式 */
   const startRename = (session: ManagedSession): void => {
     setEditingId(session.id);
     setEditName(session.name);
   };
 
-  /** 保存重命名 */
   const saveRename = async (session: ManagedSession): Promise<void> => {
     const trimmed = editName.trim();
     if (trimmed && trimmed !== session.name) {
@@ -85,7 +61,6 @@ export function SessionHistoryList({
     setEditingId(null);
   };
 
-  /** 删除会话记录 */
   const handleDelete = async (e: React.MouseEvent, id: string): Promise<void> => {
     e.stopPropagation();
     await managedSessionDelete(id);
@@ -94,25 +69,6 @@ export function SessionHistoryList({
 
   return (
     <div className="session-history">
-      {/* 顶部操作条 */}
-      <div className="session-history-toolbar">
-        <button
-          type="button"
-          className="session-history-new"
-          onClick={() => onNewSession(ws.id)}
-        >
-          + 新会话
-        </button>
-        <button
-          type="button"
-          className="session-history-refresh"
-          onClick={onRefresh}
-          title="刷新"
-        >
-          ⟳
-        </button>
-      </div>
-
       {loading && <div className="session-history-loading">加载中…</div>}
       {!loading && entries !== undefined && entries.length === 0 && (
         <div className="session-history-empty">暂无会话</div>
@@ -123,6 +79,11 @@ export function SessionHistoryList({
           key={entry.id}
           className="session-history-entry"
           onClick={() => onResume(ws.id, entry)}
+          onContextMenu={(e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            setMenu({ x: e.clientX, y: e.clientY, entry });
+          }}
           title={entry.name}
         >
           {editingId === entry.id ? (
@@ -157,11 +118,24 @@ export function SessionHistoryList({
               onClick={(e) => void handleDelete(e, entry.id)}
               title="删除"
             >
-              ✕
+              <X size={12} strokeWidth={1.5} />
             </button>
           </span>
         </div>
       ))}
+
+      {menu && (
+        <ContextMenu
+          pos={menu}
+          onClose={() => setMenu(null)}
+          items={[
+            { label: "重命名", onClick: () => startRename(menu.entry) },
+            { label: "删除", danger: true, onClick: () => {
+              void managedSessionDelete(menu.entry.id).then(() => loadHistory(ws.id));
+            }},
+          ]}
+        />
+      )}
     </div>
   );
 }

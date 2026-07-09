@@ -11,50 +11,63 @@ import {
   managedSessionList,
 } from "../api/commands";
 
-/** workspaceStore 状态与动作定义 */
-interface WorkspaceState {
-  workspaces: Workspace[]; // 全部工作空间，按 sortOrder 顺序由后端返回
-  expandedIds: Set<string>; // 侧边栏已展开（显示会话子菜单）的工作空间 id 集合
-  historyCache: Record<string, ManagedSession[]>; // 工作空间 id → 自管会话列表缓存
-  historyLoading: Record<string, boolean>; // 工作空间 id → 是否加载中
-  /** 从后端拉取工作空间列表覆盖本地 */
-  load: () => Promise<void>;
-  /** 保存（新增或更新）一个工作空间后刷新列表 */
-  save: (ws: Workspace) => Promise<void>;
-  /** 删除指定工作空间后刷新列表 */
-  remove: (id: string) => Promise<void>;
-  /** 切换某工作空间的展开/收起状态 */
-  toggleExpand: (id: string) => void;
-  /** 加载指定工作空间的自管会话到缓存 */
-  loadHistory: (id: string) => Promise<void>;
+/** 跨工作空间最近会话条目（「对话」组数据源） */
+export interface RecentSessionEntry extends ManagedSession {
+  workspaceName: string;
 }
 
-/** 工作空间 store */
+/** 从 historyCache 聚合跨空间最近会话（纯函数，组件 useMemo 调用） */
+export function selectRecentSessions(
+  cache: Record<string, ManagedSession[]>,
+  workspaces: Workspace[],
+  limit = 15,
+): RecentSessionEntry[] {
+  const wsMap = new Map(workspaces.map((w) => [w.id, w.name]));
+  const all: RecentSessionEntry[] = [];
+  for (const [wsId, entries] of Object.entries(cache)) {
+    const wsName = wsMap.get(wsId) ?? "";
+    for (const e of entries) {
+      all.push({ ...e, workspaceName: wsName });
+    }
+  }
+  all.sort((a, b) => (b.updatedAt > a.updatedAt ? 1 : b.updatedAt < a.updatedAt ? -1 : 0));
+  return all.slice(0, limit);
+}
+
+interface WorkspaceState {
+  workspaces: Workspace[];
+  expandedIds: Set<string>;
+  historyCache: Record<string, ManagedSession[]>;
+  historyLoading: Record<string, boolean>;
+  load: () => Promise<void>;
+  save: (ws: Workspace) => Promise<void>;
+  remove: (id: string) => Promise<void>;
+  toggleExpand: (id: string) => void;
+  loadHistory: (id: string) => Promise<void>;
+  loadAllHistories: () => Promise<void>;
+}
+
 export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
   workspaces: [],
   expandedIds: new Set<string>(),
   historyCache: {},
   historyLoading: {},
 
-  /** 从后端拉取工作空间列表覆盖本地 */
   load: async () => {
     const workspaces = await workspaceList();
     set({ workspaces });
   },
 
-  /** 保存（新增或更新）一个工作空间后刷新列表 */
   save: async (ws) => {
     await workspaceSave(ws);
     await get().load();
   },
 
-  /** 删除指定工作空间后刷新列表 */
   remove: async (id) => {
     await workspaceDelete(id);
     await get().load();
   },
 
-  /** 切换某工作空间的展开/收起状态（不可变更新 Set） */
   toggleExpand: (id) => {
     const next = new Set(get().expandedIds);
     if (next.has(id)) next.delete(id);
@@ -62,7 +75,6 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
     set({ expandedIds: next });
   },
 
-  /** 加载指定工作空间的自管会话到缓存，维护 loading 态 */
   loadHistory: async (id) => {
     set((s) => ({ historyLoading: { ...s.historyLoading, [id]: true } }));
     try {
@@ -74,5 +86,11 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
     } catch {
       set((s) => ({ historyLoading: { ...s.historyLoading, [id]: false } }));
     }
+  },
+
+  /** 并行预热全部工作空间的 historyCache（「对话」组数据源） */
+  loadAllHistories: async () => {
+    const { workspaces, loadHistory } = get();
+    await Promise.allSettled(workspaces.map((ws) => loadHistory(ws.id)));
   },
 }));

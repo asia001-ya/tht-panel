@@ -1,78 +1,101 @@
 /**
- * Sidebar.tsx —— 左侧工作空间侧边栏容器。
- * 结构：顶部「+ 新建工作空间」按钮 / 中部工作空间列表（按 sortOrder，前 9 个显示 Ctrl+序号角标）/
- * 底部主题切换 + 设置齿轮。
- * 会话/分屏相关的落点动作（激活工作空间、恢复历史会话、新开纯 Shell）由组装阶段通过 props 注入，
- * Sidebar 只负责把它们向下透传给 WorkspaceItem，自身不持有分屏/PTY 逻辑。
+ * Sidebar.tsx —— 左侧侧边栏容器。
+ * 新结构：快捷导航区 / 搜索 / 「项目」工作空间列表 / 「对话」最近会话 / 底部头像设置。
  */
-import { useEffect, useMemo } from "react";
+import { useEffect, useMemo, useState } from "react";
 import type { ManagedSession } from "../../api/types";
 import { useWorkspaceStore } from "../../store/workspaceStore";
-import { useSettingsStore } from "../../store/settingsStore";
 import { useUiStore } from "../../store/uiStore";
 import { WorkspaceItem } from "./WorkspaceItem";
+import { SidebarNavItem } from "./SidebarNavItem";
+import { RecentSessionList } from "./RecentSessionList";
+import { SidebarFooter } from "./SidebarFooter";
+import { SquarePen, Search, SquareTerminal, X, ICON_DEFAULTS } from "../ui/icons";
 
-/** Sidebar 组件对外 props：由组装层（App/PaneGrid 编排）提供的落点回调 */
 export interface SidebarProps {
-  /** 点击工作空间行主体：激活该工作空间（聚焦最近会话或新建） */
   onActivate: (wsId: string) => void;
-  /** 点击会话条目：激活/恢复该会话 */
   onResume: (wsId: string, entry: ManagedSession) => void;
-  /** 右键菜单「新开纯 Shell」：为该工作空间起一个纯 PowerShell 会话 */
   onNewShell: (wsId: string) => void;
-  /** 历史列表「+ 新会话」：无条件为该工作空间新建一个 AI 会话 */
   onNewSession: (wsId: string) => void;
+  onQuickShell: () => void;
 }
 
-/**
- * 侧边栏容器组件。
- * @param props 落点回调（onActivate/onResume/onNewShell）
- * @returns 侧边栏 JSX
- */
-export function Sidebar({ onActivate, onResume, onNewShell, onNewSession }: SidebarProps): React.JSX.Element {
+export function Sidebar({ onActivate, onResume, onNewShell, onNewSession, onQuickShell }: SidebarProps): React.JSX.Element {
   const workspaces = useWorkspaceStore((s) => s.workspaces);
   const loadWorkspaces = useWorkspaceStore((s) => s.load);
-  const theme = useSettingsStore((s) => s.config?.theme ?? "dark");
-  const setTheme = useSettingsStore((s) => s.setTheme);
+  const loadAllHistories = useWorkspaceStore((s) => s.loadAllHistories);
   const openWorkspaceDialog = useUiStore((s) => s.openWorkspaceDialog);
-  const openSettings = useUiStore((s) => s.openSettings);
 
-  // 首次挂载拉取工作空间列表（幂等：store.load 覆盖式写入）
+  const [searchOpen, setSearchOpen] = useState(false);
+  const [filter, setFilter] = useState("");
+
   useEffect(() => {
-    void loadWorkspaces();
-  }, [loadWorkspaces]);
+    void loadWorkspaces().then(() => {
+      void loadAllHistories();
+    });
+  }, [loadWorkspaces, loadAllHistories]);
 
-  // 按 sortOrder 升序排序（后端一般已排序，此处防御性再排一次）
   const ordered = useMemo(
     () => [...workspaces].sort((a, b) => a.sortOrder - b.sortOrder),
     [workspaces],
   );
 
-  /** 主题切换：在 light/dark 间反转并持久化 */
-  const toggleTheme = (): void => {
-    setTheme(theme === "dark" ? "light" : "dark");
-  };
+  const filteredWs = filter
+    ? ordered.filter((ws) => ws.name.toLowerCase().includes(filter.toLowerCase()))
+    : ordered;
 
   return (
     <aside className="sidebar">
-      {/* 顶部：新建工作空间 */}
-      <div className="sidebar-header">
-        <button
-          type="button"
-          className="sidebar-new-btn"
+      {/* 顶部快捷导航 */}
+      <nav className="sidebar-nav">
+        <SidebarNavItem
+          icon={<SquarePen {...ICON_DEFAULTS} />}
+          label="新建工作空间"
           onClick={() => openWorkspaceDialog()}
-          title="新建工作空间"
-        >
-          + 新建工作空间
-        </button>
-      </div>
+        />
+        <SidebarNavItem
+          icon={<Search {...ICON_DEFAULTS} />}
+          label="搜索"
+          onClick={() => { setSearchOpen(!searchOpen); if (searchOpen) setFilter(""); }}
+        />
+        <SidebarNavItem
+          icon={<SquareTerminal {...ICON_DEFAULTS} />}
+          label="新开终端"
+          onClick={onQuickShell}
+        />
+      </nav>
 
-      {/* 中部：工作空间列表（可滚动） */}
-      <div className="sidebar-list">
-        {ordered.length === 0 ? (
+      {/* 搜索框 */}
+      {searchOpen && (
+        <div className="sidebar-search">
+          <input
+            className="sidebar-search-input"
+            value={filter}
+            onChange={(e) => setFilter(e.target.value)}
+            placeholder="过滤项目与对话…"
+            autoFocus
+            onKeyDown={(e) => { if (e.key === "Escape") { setSearchOpen(false); setFilter(""); } }}
+          />
+          {filter && (
+            <button
+              type="button"
+              className="sidebar-search-clear"
+              onClick={() => setFilter("")}
+            >
+              <X size={14} strokeWidth={1.5} />
+            </button>
+          )}
+        </div>
+      )}
+
+      {/* 可滚动列表区 */}
+      <div className="sidebar-scroll">
+        {/* 项目组 */}
+        <div className="sidebar-group-title">项目</div>
+        {filteredWs.length === 0 ? (
           <div className="sidebar-empty">暂无工作空间</div>
         ) : (
-          ordered.map((ws, index) => (
+          filteredWs.map((ws, index) => (
             <WorkspaceItem
               key={ws.id}
               ws={ws}
@@ -84,27 +107,14 @@ export function Sidebar({ onActivate, onResume, onNewShell, onNewSession }: Side
             />
           ))
         )}
+
+        {/* 对话组 */}
+        <div className="sidebar-group-title">对话</div>
+        <RecentSessionList filter={filter} onResume={onResume} />
       </div>
 
-      {/* 底部：主题切换 + 设置齿轮 */}
-      <div className="sidebar-footer">
-        <button
-          type="button"
-          className="sidebar-footer-btn"
-          onClick={toggleTheme}
-          title={theme === "dark" ? "切换到浅色主题" : "切换到深色主题"}
-        >
-          {theme === "dark" ? "☀" : "🌙"}
-        </button>
-        <button
-          type="button"
-          className="sidebar-footer-btn"
-          onClick={() => openSettings()}
-          title="设置"
-        >
-          ⚙
-        </button>
-      </div>
+      {/* 底部 */}
+      <SidebarFooter />
     </aside>
   );
 }

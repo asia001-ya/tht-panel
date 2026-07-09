@@ -78,6 +78,12 @@ function WorkspaceForm({ editing }: { editing?: Workspace }) {
   const [model, setModel] = useState(initCfg?.model ?? "");
   const [extraArgsText, setExtraArgsText] = useState((initCfg?.extraArgs ?? []).join("\n"));
 
+  // Keep-alive 配置
+  const initKa = editing?.keepAlive;
+  const [kaEnabled, setKaEnabled] = useState(initKa?.enabled ?? false);
+  const [kaCommand, setKaCommand] = useState(initKa?.command ?? "");
+  const [kaInterval, setKaInterval] = useState(initKa?.intervalMin ?? 5);
+
   const isEdit = editing !== undefined;
 
   /** 打开系统目录选择器，选定后填入 path，未手改名时同步默认名 */
@@ -102,6 +108,9 @@ function WorkspaceForm({ editing }: { editing?: Workspace }) {
       config: useGlobalConfig ? undefined : buildConfig(baseUrl, apiKey, model, extraArgsText),
       sortOrder: isEdit ? editing.sortOrder : workspaces.length,
       createdAt: isEdit ? editing.createdAt : new Date().toISOString(),
+      keepAlive: kaEnabled
+        ? { enabled: true, command: kaCommand.trim(), intervalMin: kaInterval }
+        : undefined,
     };
     await save(ws);
     closeWorkspaceDialog();
@@ -241,6 +250,44 @@ function WorkspaceForm({ editing }: { editing?: Workspace }) {
                   value={extraArgsText}
                   onChange={(e) => setExtraArgsText(e.target.value)}
                 />
+              </div>
+            </div>
+          )}
+
+          {/* Keep-Alive 配置 */}
+          <div className="dialog-field dialog-field-inline">
+            <label className="dialog-label">
+              <input
+                type="checkbox"
+                checked={kaEnabled}
+                onChange={(e) => setKaEnabled(e.target.checked)}
+              />
+              启用 Keep-Alive
+            </label>
+          </div>
+          {kaEnabled && (
+            <div className="dialog-subform">
+              <div className="dialog-field">
+                <label className="dialog-label">发送指令</label>
+                <input
+                  className="dialog-input"
+                  type="text"
+                  value={kaCommand}
+                  placeholder="例如: hi"
+                  onChange={(e) => setKaCommand(e.target.value)}
+                />
+              </div>
+              <div className="dialog-field">
+                <label className="dialog-label">发送间隔（分钟）</label>
+                <select
+                  className="dialog-input"
+                  value={kaInterval}
+                  onChange={(e) => setKaInterval(Number(e.target.value))}
+                >
+                  {[1, 2, 3, 5, 10, 15, 20, 30].map((m) => (
+                    <option key={m} value={m}>{m} 分钟</option>
+                  ))}
+                </select>
               </div>
             </div>
           )}

@@ -1,39 +1,82 @@
 /**
  * PaneLeaf：单个分屏叶子的渲染单元。
- * 顶部迷你标题栏（会话标题 + 状态点 + 锁定/左右分割/上下分割/关闭按钮），
- * 主体渲染 TerminalPane（或空占位提示）。
- * 整块点击置为活动 leaf；活动时加 pane-active 高亮边框（用 --accent）。
- * 参考实施计划 9.1（分屏渲染）/ 9.2（xterm 生命周期）。
+ * 标题栏：项目名 + Tab 条（每 Tab 状态点+会话名+关闭） + 操作按钮组。
+ * 主体渲染当前激活 Tab 的 TerminalPane（或空占位提示）。
  */
 import type { LeafNode, SessionState } from "../../api/types";
 import { useLayoutStore } from "../../store/layoutStore";
 import { useSessionStore } from "../../store/sessionStore";
+import { useWorkspaceStore } from "../../store/workspaceStore";
 import { TerminalPane } from "../../terminal/TerminalPane";
+import { IconButton } from "../ui/IconButton";
+import { Lock, LockOpen, Columns2, Rows2, X, ICON_DEFAULTS } from "../ui/icons";
 
-/** PaneLeaf 组件属性 */
-interface PaneLeafProps {
-  leaf: LeafNode; // 当前叶子节点（含 id / sessionId / locked）
+/* ---------- PaneTab 子组件 ---------- */
+
+interface PaneTabProps {
+  leafId: string;
+  sessionId: string;
+  active: boolean;
 }
 
-/**
- * 单个分屏叶子。
- * @param props.leaf 叶子节点数据
- * @returns 叶子分屏的 React 元素
- */
+function PaneTab({ leafId, sessionId, active }: PaneTabProps): React.ReactElement {
+  const activateTab = useLayoutStore((s) => s.activateTab);
+  const setActive = useLayoutStore((s) => s.setActive);
+  const closeTab = useLayoutStore((s) => s.closeTab);
+
+  const managedName = useWorkspaceStore((s) => {
+    for (const list of Object.values(s.historyCache))
+      for (const m of list) if (m.ptySessionId === sessionId) return m.name;
+    return undefined;
+  });
+  const title = useSessionStore((s) => s.sessions[sessionId]?.title);
+  const state: SessionState = useSessionStore((s) => s.sessions[sessionId]?.state ?? "dead");
+
+  const label = managedName ?? title ?? "会话";
+
+  return (
+    <div
+      className={`pane-tab${active ? " active" : ""}`}
+      title={label}
+      onClick={(e) => {
+        e.stopPropagation();
+        setActive(leafId);
+        activateTab(leafId, sessionId);
+      }}
+      onAuxClick={(e) => {
+        if (e.button === 1) { e.stopPropagation(); closeTab(leafId, sessionId); }
+      }}
+    >
+      <span className="pane-status-dot" data-state={state} />
+      <span className="pane-tab-label">{label}</span>
+      <span
+        className="pane-tab-close"
+        onClick={(e) => { e.stopPropagation(); closeTab(leafId, sessionId); }}
+      >
+        ×
+      </span>
+    </div>
+  );
+}
+
+/* ---------- PaneLeaf 主组件 ---------- */
+
+interface PaneLeafProps {
+  leaf: LeafNode;
+}
+
 export function PaneLeaf({ leaf }: PaneLeafProps): React.ReactElement {
-  // 分屏动作与活动态：逐字段订阅，避免整表变更导致的无谓重渲染
   const activePaneId = useLayoutStore((s) => s.activePaneId);
   const setActive = useLayoutStore((s) => s.setActive);
   const toggleLock = useLayoutStore((s) => s.toggleLock);
   const splitPane = useLayoutStore((s) => s.splitPane);
   const closePane = useLayoutStore((s) => s.closePane);
 
-  // 会话标题与状态：仅在本 leaf 绑定了会话时读取
-  const title = useSessionStore((s) =>
-    leaf.sessionId ? s.sessions[leaf.sessionId]?.title : undefined,
+  const wsId = useSessionStore((s) =>
+    leaf.activeSessionId ? s.sessions[leaf.activeSessionId]?.workspaceId : null,
   );
-  const state: SessionState | undefined = useSessionStore((s) =>
-    leaf.sessionId ? s.sessions[leaf.sessionId]?.state : undefined,
+  const wsName = useWorkspaceStore((s) =>
+    wsId ? (s.workspaces.find((w) => w.id === wsId)?.name ?? "") : "",
   );
 
   const isActive = activePaneId === leaf.id;
@@ -41,73 +84,57 @@ export function PaneLeaf({ leaf }: PaneLeafProps): React.ReactElement {
   return (
     <div
       className={`pane-leaf${isActive ? " pane-active" : ""}`}
-      // 点击叶子任意处即置为活动 leaf（落点判定用）
       onClick={() => setActive(leaf.id)}
     >
       <div className="pane-titlebar">
-        {/* 状态点：无会话不显示；有会话按 state 上色（data-state 驱动 CSS） */}
-        {leaf.sessionId && (
-          <span className="pane-status-dot" data-state={state ?? "idle"} />
-        )}
-        {/* 会话标题：无会话显示“空” */}
-        <span className="pane-title" title={title ?? "空"}>
-          {title ?? "空"}
+        <span className="pane-ws-name" title={wsName || "空"}>
+          {wsName || "空"}
         </span>
 
+        <div className="pane-tabs">
+          {leaf.sessionIds.map((sid) => (
+            <PaneTab
+              key={sid}
+              leafId={leaf.id}
+              sessionId={sid}
+              active={sid === leaf.activeSessionId}
+            />
+          ))}
+        </div>
+
         <div className="pane-actions">
-          <button
-            type="button"
-            className="pane-btn"
+          <IconButton
             title={leaf.locked ? "已锁定：点击解锁" : "未锁定：点击锁定"}
-            onClick={(e) => {
-              e.stopPropagation();
-              toggleLock(leaf.id);
-            }}
+            onClick={(e) => { e.stopPropagation(); toggleLock(leaf.id); }}
           >
-            {leaf.locked ? "🔒" : "🔓"}
-          </button>
-          <button
-            type="button"
-            className="pane-btn"
+            {leaf.locked ? <Lock {...ICON_DEFAULTS} /> : <LockOpen {...ICON_DEFAULTS} />}
+          </IconButton>
+          <IconButton
             title="左右分割"
-            onClick={(e) => {
-              e.stopPropagation();
-              splitPane(leaf.id, "horizontal");
-            }}
+            onClick={(e) => { e.stopPropagation(); splitPane(leaf.id, "horizontal"); }}
           >
-            ▥
-          </button>
-          <button
-            type="button"
-            className="pane-btn"
+            <Columns2 {...ICON_DEFAULTS} />
+          </IconButton>
+          <IconButton
             title="上下分割"
-            onClick={(e) => {
-              e.stopPropagation();
-              splitPane(leaf.id, "vertical");
-            }}
+            onClick={(e) => { e.stopPropagation(); splitPane(leaf.id, "vertical"); }}
           >
-            ▤
-          </button>
-          <button
-            type="button"
-            className="pane-btn pane-btn-close"
+            <Rows2 {...ICON_DEFAULTS} />
+          </IconButton>
+          <IconButton
             title="关闭此分屏"
-            onClick={(e) => {
-              e.stopPropagation();
-              closePane(leaf.id);
-            }}
+            danger
+            onClick={(e) => { e.stopPropagation(); closePane(leaf.id); }}
           >
-            ✕
-          </button>
+            <X {...ICON_DEFAULTS} />
+          </IconButton>
         </div>
       </div>
 
       <div className="pane-body">
-        {leaf.sessionId ? (
-          // 已绑定会话：常驻复用的 xterm 显示器（换会话 = detach+attach，不销毁实例）
-          <TerminalPane sessionId={leaf.sessionId} />
+        {leaf.activeSessionId ? (
+          <TerminalPane sessionId={leaf.activeSessionId} />
         ) : (
-          // 空占位：引导用户从侧边栏/历史发起会话或开纯 PowerShell
           <div className="pane-empty">
             点击工作空间/历史会话，或新开 PowerShell
           </div>

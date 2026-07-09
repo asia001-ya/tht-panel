@@ -66,6 +66,7 @@ pub fn run() {
             commands::session_cmds::managed_session_create,
             commands::session_cmds::managed_session_update,
             commands::session_cmds::managed_session_delete,
+            commands::session_cmds::ai_session_detect,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
