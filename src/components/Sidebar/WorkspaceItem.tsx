@@ -6,7 +6,7 @@ import type { Workspace, ManagedSession, SessionState } from "../../api/types";
 import { useWorkspaceStore } from "../../store/workspaceStore";
 import { useUiStore } from "../../store/uiStore";
 import { useSessionStore, badgeFor } from "../../store/sessionStore";
-import { useSettingsStore } from "../../store/settingsStore";
+import { selectProviders, useSettingsStore } from "../../store/settingsStore";
 import { resolveProjectProvider } from "../../lib/providers";
 import { startKeepAlive, stopKeepAlive, isKeepAliveActive } from "../../keepAliveManager";
 import { SessionHistoryList } from "./SessionHistoryList";
@@ -43,7 +43,7 @@ export function WorkspaceItem({
   const removeWorkspace = useWorkspaceStore((s) => s.remove);
   const openWorkspaceDialog = useUiStore((s) => s.openWorkspaceDialog);
   const openConfirm = useUiStore((s) => s.openConfirm);
-  const providers = useSettingsStore((s) => s.config?.providers ?? []);
+  const providers = useSettingsStore(selectProviders);
   const provider = resolveProjectProvider(ws, providers);
 
   const badge = useSessionStore(() => badgeFor(ws.id));

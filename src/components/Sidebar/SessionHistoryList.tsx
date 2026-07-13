@@ -5,7 +5,7 @@ import { useEffect, useState } from "react";
 import type { Workspace, ManagedSession } from "../../api/types";
 import { useSessionStore } from "../../store/sessionStore";
 import { useWorkspaceStore } from "../../store/workspaceStore";
-import { useSettingsStore } from "../../store/settingsStore";
+import { selectProviders, useSettingsStore } from "../../store/settingsStore";
 import {
   managedSessionDelete,
   managedSessionUpdate,
@@ -41,7 +41,7 @@ export function SessionHistoryList({
   const entries = useWorkspaceStore((s) => s.historyCache[ws.id]) as ManagedSession[] | undefined;
   const loading = useWorkspaceStore((s) => s.historyLoading[ws.id] ?? false);
   const loadHistory = useWorkspaceStore((s) => s.loadHistory);
-  const providers = useSettingsStore((s) => s.config?.providers ?? []);
+  const providers = useSettingsStore(selectProviders);
 
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editName, setEditName] = useState("");

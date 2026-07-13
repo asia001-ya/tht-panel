@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import type { Workspace } from "../../api/types";
-import { useSettingsStore } from "../../store/settingsStore";
+import { selectProviders, useSettingsStore } from "../../store/settingsStore";
 import { useUiStore } from "../../store/uiStore";
 import { useWorkspaceStore } from "../../store/workspaceStore";
 import { ProviderSelect } from "../settings/ProviderSelect";
@@ -15,7 +15,7 @@ function lastSegment(path: string): string {
 function WorkspaceForm({ editing }: { editing?: Workspace }): React.JSX.Element {
   const closeWorkspaceDialog = useUiStore((state) => state.closeWorkspaceDialog);
   const openSettings = useUiStore((state) => state.openSettings);
-  const providers = useSettingsStore((state) => state.config?.providers ?? []);
+  const providers = useSettingsStore(selectProviders);
   const save = useWorkspaceStore((state) => state.save);
   const workspaces = useWorkspaceStore((state) => state.workspaces);
 

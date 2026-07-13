@@ -12,7 +12,7 @@ import {
   resolveConversationProvider,
   resolveProjectProvider,
 } from "../../lib/providers";
-import { useSettingsStore } from "../../store/settingsStore";
+import { selectProviders, useSettingsStore } from "../../store/settingsStore";
 import { useWorkspaceStore } from "../../store/workspaceStore";
 import { ProviderSelect } from "../settings/ProviderSelect";
 import { Send } from "../ui/icons";
@@ -219,7 +219,7 @@ export function NativeChatPaneHost({
       : undefined,
   );
   const loadHistory = useWorkspaceStore((state) => state.loadHistory);
-  const providers = useSettingsStore((state) => state.config?.providers ?? []);
+  const providers = useSettingsStore(selectProviders);
 
   if (!conversation || !project) {
     return <div className="pane-empty">会话不存在</div>;

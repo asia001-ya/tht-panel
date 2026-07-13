@@ -3,7 +3,7 @@
  * 终端输出永不进 store，此处仅低频 UI/配置状态。
  */
 import { create } from "zustand";
-import type { GlobalConfig } from "../api/types";
+import type { GlobalConfig, ProviderProfile } from "../api/types";
 import { configGet, configSet } from "../api/commands";
 
 /** 持久化防抖句柄（模块级，跨调用复用同一个定时器） */
@@ -41,6 +41,12 @@ interface SettingsState {
   setTheme: (theme: "light" | "dark") => void;
   /** 设置终端字号并持久化 */
   setFontSize: (fontSize: number) => void;
+}
+
+const EMPTY_PROVIDERS: ProviderProfile[] = [];
+
+export function selectProviders(state: SettingsState): ProviderProfile[] {
+  return state.config?.providers ?? EMPTY_PROVIDERS;
 }
 
 /** 全局配置 store */
