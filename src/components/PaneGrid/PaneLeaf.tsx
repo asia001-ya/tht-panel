@@ -201,7 +201,7 @@ export function PaneLeaf({ leaf }: PaneLeafProps): React.ReactElement {
           <TerminalPane sessionId={leaf.activeSessionId} />
         ) : (
           <div className="pane-empty">
-            从菜单打开项目会话，或新建原生 AI 会话
+            从菜单打开项目会话，或新建终端会话
           </div>
         )}
       </div>

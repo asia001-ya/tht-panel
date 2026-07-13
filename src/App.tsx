@@ -27,7 +27,7 @@ import { ptySpawn, appQuit, managedSessionCreate, managedSessionUpdate, aiSessio
 import { onSessionState, onSessionExit, onQuitRequest } from "./api/events";
 import type { LeafNode, ManagedSession, SpawnRequest } from "./api/types";
 import {
-  resolveProjectProvider,
+  resolveNewTerminalSelection,
   resolveTerminalResumeSelection,
 } from "./lib/providers";
 import { nativeConversationTabId } from "./lib/nativeConversation";
@@ -239,36 +239,28 @@ export default function App() {
     }
   }, []);
 
-  const createNativeConversation = useCallback(
+  /**
+   * 为项目新建 PowerShell PTY 会话。
+   * @param wsId 目标工作空间 ID。
+   * @returns PTY 启动并绑定到目标窗格后完成。
+   */
+  const newSession = useCallback(
     async (wsId: string): Promise<void> => {
       const ws = useWorkspaceStore.getState().workspaces.find((item) => item.id === wsId);
       if (!ws) return;
+      const leafId = pickLeafFor(wsId);
+      if (!leafId) return;
       const providers = useSettingsStore.getState().config?.providers ?? [];
-      const provider = resolveProjectProvider(ws, providers);
-      const now = new Date().toISOString();
-      const conversation: ManagedSession = {
-        id: crypto.randomUUID(),
+      const selection = resolveNewTerminalSelection(ws, providers);
+      await spawnInto(leafId, {
         workspaceId: wsId,
-        name: "新会话",
-        kind: provider?.driver ?? ws.agent,
-        mode: "native",
-        messages: [],
-        createdAt: now,
-        updatedAt: now,
-      };
-      await managedSessionCreate(conversation);
-      await useWorkspaceStore.getState().loadHistory(wsId);
-      openNativeConversation(conversation);
+        kind: selection.kind,
+        providerId: selection.providerId,
+        cols: INIT_COLS,
+        rows: INIT_ROWS,
+      });
     },
-    [openNativeConversation],
-  );
-
-  /** 「+ 新会话」 */
-  const newSession = useCallback(
-    async (wsId: string): Promise<void> => {
-      await createNativeConversation(wsId);
-    },
-    [createNativeConversation],
+    [pickLeafFor, spawnInto],
   );
 
   /** 点击侧边栏已有会话：PTY 活着则聚焦，否则 resume */
@@ -317,7 +309,11 @@ export default function App() {
     [openNativeConversation, openSession, pickLeafFor, spawnInto],
   );
 
-  /** 点击项目：优先打开最近自管会话，其次活跃终端，否则新建原生会话 */
+  /**
+   * 激活项目最近的历史或活跃终端；没有可用会话时新建 PTY。
+   * @param wsId 目标工作空间 ID。
+   * @returns 目标会话完成打开或启动后完成。
+   */
   const activateWorkspace = useCallback(
     async (wsId: string): Promise<void> => {
       let managedSessions = useWorkspaceStore.getState().historyCache[wsId];
@@ -337,9 +333,9 @@ export default function App() {
         openSession(target.sessionId);
         return;
       }
-      await createNativeConversation(wsId);
+      await newSession(wsId);
     },
-    [createNativeConversation, openSession, resumeSession],
+    [newSession, openSession, resumeSession],
   );
 
   /** 新开纯 Shell */
