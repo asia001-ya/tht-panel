@@ -64,9 +64,13 @@ function WorkspaceForm({ editing }: { editing?: Workspace }): React.JSX.Element 
     closeWorkspaceDialog();
   };
 
+  /**
+   * 关闭项目表单并直接打开供应商管理页。
+   * @returns 无返回值。
+   */
   const configureProviders = (): void => {
     closeWorkspaceDialog();
-    openSettings();
+    openSettings("providers");
   };
 
   return (

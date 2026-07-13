@@ -30,6 +30,7 @@ export {
   GripVertical,
   LayoutTemplate,
   Save,
+  Server,
 } from "lucide-react";
 
 /** 全局图标默认 props */

@@ -28,11 +28,16 @@ interface ConfirmOptions {
   onConfirm: () => void;
 }
 
+/** 设置对话框可切换的内容页。 */
+export type SettingsSection = "general" | "providers";
+
 interface UiState {
   /** 工作空间新建/编辑对话框 */
   workspaceDialog: WorkspaceDialogState;
   /** 全局设置对话框是否打开 */
   settingsOpen: boolean;
+  /** 设置对话框当前内容页 */
+  settingsSection: SettingsSection;
   /** 通用确认框；null=未激活 */
   confirm: ConfirmState | null;
 
@@ -40,8 +45,10 @@ interface UiState {
   openWorkspaceDialog: (editing?: Workspace) => void;
   /** 关闭工作空间对话框并清除 editing */
   closeWorkspaceDialog: () => void;
-  /** 打开全局设置对话框 */
-  openSettings: () => void;
+  /** 打开全局设置对话框，默认进入常规页 */
+  openSettings: (section?: SettingsSection) => void;
+  /** 切换设置对话框内容页 */
+  setSettingsSection: (section: SettingsSection) => void;
   /** 关闭全局设置对话框 */
   closeSettings: () => void;
   /** 打开确认框，传入标题/内容/确认回调 */
@@ -54,12 +61,15 @@ interface UiState {
 export const useUiStore = create<UiState>((set) => ({
   workspaceDialog: { open: false, editing: undefined },
   settingsOpen: false,
+  settingsSection: "general",
   confirm: null,
 
   openWorkspaceDialog: (editing) => set({ workspaceDialog: { open: true, editing } }),
   closeWorkspaceDialog: () => set({ workspaceDialog: { open: false, editing: undefined } }),
 
-  openSettings: () => set({ settingsOpen: true }),
+  openSettings: (section = "general") =>
+    set({ settingsOpen: true, settingsSection: section }),
+  setSettingsSection: (settingsSection) => set({ settingsSection }),
   closeSettings: () => set({ settingsOpen: false }),
 
   openConfirm: (o) => set({ confirm: { open: true, ...o } }),

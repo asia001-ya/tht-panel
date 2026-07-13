@@ -7,6 +7,10 @@ interface ProviderManagerProps {
   onChange: (providers: ProviderProfile[]) => void;
 }
 
+/**
+ * 创建一条可编辑的新供应商草稿。
+ * @returns 带唯一 ID 和默认 Claude 驱动的空供应商。
+ */
 function emptyProvider(): ProviderProfile {
   return {
     id: crypto.randomUUID(),
@@ -15,25 +19,44 @@ function emptyProvider(): ProviderProfile {
   };
 }
 
+/**
+ * 渲染供应商列表及新增、编辑表单。
+ * @param props 当前供应商列表和变更回调。
+ * @returns 供应商管理界面。
+ */
 export function ProviderManager({
   providers,
   onChange,
 }: ProviderManagerProps): React.JSX.Element {
   const [draft, setDraft] = useState<ProviderProfile | null>(null);
 
+  /**
+   * 合并供应商草稿的局部字段。
+   * @param patch 要覆盖到当前草稿的字段。
+   * @returns 无返回值。
+   */
   const patchDraft = (patch: Partial<ProviderProfile>): void => {
     setDraft((current) => (current ? { ...current, ...patch } : current));
   };
 
+  /**
+   * 校验、规范化并保存当前供应商草稿。
+   * @returns 无返回值。
+   */
   const saveDraft = (): void => {
     if (!draft?.name.trim()) return;
-    const normalized = {
-      ...draft,
+    const { extraArgs: rawExtraArgs, ...draftWithoutArgs } = draft;
+    const extraArgs = (rawExtraArgs ?? [])
+      .map((argument) => argument.trim())
+      .filter(Boolean);
+    const normalized: ProviderProfile = {
+      ...draftWithoutArgs,
       name: draft.name.trim(),
       baseUrl: draft.baseUrl?.trim() || undefined,
       apiKey: draft.apiKey?.trim() || undefined,
       model: draft.model?.trim() || undefined,
     };
+    if (extraArgs.length > 0) normalized.extraArgs = extraArgs;
     const exists = providers.some((provider) => provider.id === normalized.id);
     onChange(
       exists
@@ -49,7 +72,9 @@ export function ProviderManager({
     <div className="provider-manager">
       <div className="provider-list">
         {providers.length === 0 && (
-          <div className="provider-empty">尚未配置供应商</div>
+          <div className="provider-empty">
+            未添加供应商，将使用系统 Claude/Codex 配置
+          </div>
         )}
         {providers.map((provider) => (
           <div className="provider-row" key={provider.id}>
@@ -144,6 +169,17 @@ export function ProviderManager({
                 value={draft.model ?? ""}
                 placeholder="空值使用供应商默认模型"
                 onChange={(event) => patchDraft({ model: event.target.value })}
+              />
+            </label>
+            <label className="dialog-label provider-editor-wide">
+              附加参数（每行一个）
+              <textarea
+                className="dialog-textarea"
+                value={(draft.extraArgs ?? []).join("\n")}
+                placeholder="例如：--verbose"
+                onChange={(event) =>
+                  patchDraft({ extraArgs: event.target.value.split("\n") })
+                }
               />
             </label>
           </div>

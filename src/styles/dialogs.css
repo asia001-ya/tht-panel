@@ -26,7 +26,8 @@
   overflow: hidden;
 }
 .dialog-settings {
-  width: 560px;
+  width: 720px;
+  height: min(600px, calc(100vh - 64px));
 }
 .dialog-confirm {
   width: 400px;
@@ -45,6 +46,53 @@
 .dialog-body {
   padding: 16px 18px;
   overflow-y: auto;
+}
+
+.settings-shell {
+  display: grid;
+  grid-template-columns: 160px minmax(0, 1fr);
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+}
+.settings-nav {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 12px;
+  background: var(--panel-2);
+  border-right: 1px solid var(--border);
+}
+.settings-nav-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  min-height: 36px;
+  padding: 7px 9px;
+  color: var(--fg-dim);
+  background: transparent;
+  border: 0;
+  border-radius: var(--radius-sm);
+  font-size: 13px;
+  text-align: left;
+}
+.settings-nav-item:hover {
+  color: var(--fg);
+  background: var(--hover);
+}
+.settings-nav-item.active {
+  color: var(--fg);
+  background: var(--sidebar-active);
+}
+.settings-content {
+  min-width: 0;
+  min-height: 0;
+  padding: 16px 18px;
+  overflow-y: auto;
+}
+.settings-content .dialog-group:last-child {
+  margin-bottom: 0;
 }
 
 .dialog-field {
@@ -273,6 +321,9 @@
 .provider-editor-grid .dialog-input {
   margin-top: 5px;
 }
+.provider-editor-grid .dialog-textarea {
+  margin-top: 5px;
+}
 .provider-editor-wide {
   grid-column: 1 / -1;
 }
@@ -281,4 +332,44 @@
   justify-content: flex-end;
   gap: 8px;
   margin-top: 12px;
+}
+
+@media (max-width: 640px) {
+  .dialog-settings {
+    width: calc(100vw - 24px);
+    max-width: none;
+    height: calc(100vh - 24px);
+    max-height: none;
+  }
+  .settings-shell {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: auto minmax(0, 1fr);
+  }
+  .settings-nav {
+    flex-direction: row;
+    padding: 8px;
+    border-right: 0;
+    border-bottom: 1px solid var(--border);
+  }
+  .settings-nav-item {
+    flex: 1;
+    justify-content: center;
+    min-width: 0;
+    white-space: nowrap;
+  }
+}
+
+@media (max-width: 480px) {
+  .provider-row {
+    grid-template-columns: 52px minmax(0, 1fr) 28px 28px;
+  }
+  .provider-model {
+    display: none;
+  }
+  .provider-editor-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .provider-editor-wide {
+    grid-column: 1;
+  }
 }
