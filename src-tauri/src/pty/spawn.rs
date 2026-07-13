@@ -6,16 +6,16 @@
 //!   - agent:  `powershell.exe -NoLogo -NoExit -EncodedCommand <base64(UTF-16LE)>`
 //!             脚本 = `chcp 65001 | Out-Null; [Console]::OutputEncoding=...UTF8; & claude --model m --resume id ...`
 //!
-//! 用 `-EncodedCommand` 规避引号地狱（base64 的是 UTF-16LE 字节）。配置来源：
-//! `use_global_config ? GlobalConfig.{claude,codex}Defaults : workspace.config`，整套取用不做字段级合并。
-//! env 注入仅在有值时进行、不进命令行；codex 独立配置额外生成隔离的 CODEX_HOME。
+//! 用 `-EncodedCommand` 规避引号地狱（base64 的是 UTF-16LE 字节）。唯一合法的命名供应商
+//! 使用自身配置；没有合法供应商时不注入应用配置，裸启动 AI 并沿用用户系统配置。
+//! env 注入仅在命名供应商有值时进行、不进命令行；命名 codex 额外生成隔离的 CODEX_HOME。
 //! **绝不修改用户的 ~/.claude 或 ~/.codex 配置文件。**
 
 use std::path::Path;
 
 use base64::Engine;
 
-use crate::config::model::{AgentConfig, GlobalConfig, SpawnRequest, Workspace};
+use crate::config::model::{AgentConfig, GlobalConfig, ProviderProfile, SpawnRequest, Workspace};
 use crate::error::AppError;
 
 /// 已解析的启动描述：交给 PtyManager::spawn 直接用来 openpty + spawn_command。
@@ -40,10 +40,10 @@ pub struct ResolvedLaunch {
 /// 组装一次 spawn 的启动描述。
 ///
 /// 参数：
-///   - `global`：全局配置（提供 shell_path 与统一配置默认值）；
+///   - `global`：全局配置（提供 shell_path 与命名供应商）；
 ///   - `ws`：目标工作空间（None 表示纯 shell / 未绑定，cwd 退化到用户主目录）；
 ///   - `req`：启动请求（kind / resume / cols / rows）；
-///   - `config_dir`：应用配置目录（用于生成隔离 CODEX_HOME）。
+///   - `config_dir`：应用配置目录（仅用于命名 Codex 生成隔离 CODEX_HOME）。
 /// 返回：ResolvedLaunch 或 AppError。
 pub fn build_resolved_launch(
     global: &GlobalConfig,
@@ -82,32 +82,22 @@ pub fn build_resolved_launch(
         });
     }
 
-    let provider_id = req
+    let provider = req
         .provider_id
         .as_deref()
-        .or_else(|| ws.and_then(|workspace| workspace.default_provider_id.as_deref()));
-    let provider =
-        provider_id.and_then(|id| global.providers.iter().find(|candidate| candidate.id == id));
-    if provider_id.is_some() && provider.is_none() {
-        return Err(AppError::NotFound("供应商不存在".to_string()));
-    }
+        .and_then(|id| unique_valid_provider(global, id))
+        .or_else(|| {
+            ws.and_then(|workspace| workspace.default_provider_id.as_deref())
+                .and_then(|id| unique_valid_provider(global, id))
+        });
     let kind = provider
         .map(|profile| profile.driver.clone())
         .unwrap_or_else(|| req.kind.clone());
 
-    // AI 模式（claude / codex）：解析该用哪套配置。
-    // useGlobalConfig=true 或无独立 config → 用全局默认；否则用工作空间独立配置。
-    let use_global = ws.map(|w| w.use_global_config).unwrap_or(true);
-    let resolved_cfg: AgentConfig = if let Some(profile) = provider {
-        profile.config.clone()
-    } else if use_global {
-        match kind.as_str() {
-            "codex" => global.codex_defaults.clone(),
-            _ => global.claude_defaults.clone(),
-        }
-    } else {
-        ws.and_then(|w| w.config.clone()).unwrap_or_default()
-    };
+    // 无合法命名供应商时不带应用配置，让 AI 使用用户系统配置。
+    let resolved_cfg = provider
+        .map(|profile| profile.config.clone())
+        .unwrap_or_default();
 
     let mut env: Vec<(String, String)> = Vec::new();
     let mut ai_args: Vec<String> = Vec::new();
@@ -152,15 +142,10 @@ pub fn build_resolved_launch(
             if let Some(key) = non_empty(&resolved_cfg.api_key) {
                 env.push(("OPENAI_API_KEY".to_string(), key));
             }
-            // 独立配置：生成隔离 CODEX_HOME + config.toml（含 model / base_url / env_key）。
-            if provider.is_some() || !use_global {
-                if let Some(scope_id) = provider
-                    .map(|profile| profile.id.as_str())
-                    .or_else(|| ws.map(|workspace| workspace.id.as_str()))
-                {
-                    let codex_home = prepare_codex_home(config_dir, scope_id, &resolved_cfg)?;
-                    env.push(("CODEX_HOME".to_string(), codex_home));
-                }
+            // 仅命名 Codex 生成隔离 CODEX_HOME，系统回退沿用用户自己的配置目录。
+            if let Some(profile) = provider {
+                let codex_home = prepare_codex_home(config_dir, &profile.id, &resolved_cfg)?;
+                env.push(("CODEX_HOME".to_string(), codex_home));
             }
         }
         _ => {
@@ -220,6 +205,20 @@ pub fn build_resolved_launch(
         kind,
         resumed_from: non_empty(&req.resume_session_id),
     })
+}
+
+/// 按标识解析唯一且合法的命名供应商。
+/// 参数：global——全局配置；id——供应商标识。返回：同 ID 恰有一个且驱动为 claude/codex 的供应商。
+fn unique_valid_provider<'a>(global: &'a GlobalConfig, id: &str) -> Option<&'a ProviderProfile> {
+    let mut candidates = global
+        .providers
+        .iter()
+        .filter(|candidate| candidate.id == id);
+    let provider = candidates.next()?;
+    if candidates.next().is_some() || !matches!(provider.driver.as_str(), "claude" | "codex") {
+        return None;
+    }
+    Some(provider)
 }
 
 /// 生成并写入隔离的 CODEX_HOME 目录及其 config.toml。
@@ -289,6 +288,55 @@ fn encode_powershell_command(script: &str) -> String {
 mod tests {
     use super::*;
     use crate::config::model::ProviderProfile;
+    use std::path::PathBuf;
+    use uuid::Uuid;
+
+    /// 构造测试供应商；参数为标识、驱动和配置，返回完整供应商配置。
+    fn provider(id: &str, driver: &str, config: AgentConfig) -> ProviderProfile {
+        ProviderProfile {
+            id: id.to_string(),
+            name: id.to_string(),
+            driver: driver.to_string(),
+            config,
+        }
+    }
+
+    /// 构造可识别的旧配置；参数为标记，返回所有字段均非空的配置。
+    fn legacy_config(marker: &str) -> AgentConfig {
+        AgentConfig {
+            base_url: Some(format!("https://{marker}.example.com")),
+            api_key: Some(format!("{marker}-key")),
+            model: Some(format!("{marker}-model")),
+            extra_args: vec![format!("--{marker}-extra")],
+        }
+    }
+
+    /// 解码启动描述中的 PowerShell 脚本；参数为启动描述，返回 UTF-16LE 解码后的文本。
+    fn decode_script(launch: &ResolvedLaunch) -> String {
+        let encoded_index = launch
+            .args
+            .iter()
+            .position(|arg| arg == "-EncodedCommand")
+            .expect("AI 启动参数应包含 -EncodedCommand");
+        let encoded = launch
+            .args
+            .get(encoded_index + 1)
+            .expect("-EncodedCommand 后应存在编码脚本");
+        let bytes = base64::engine::general_purpose::STANDARD
+            .decode(encoded)
+            .expect("PowerShell 脚本应为有效 base64");
+        assert_eq!(bytes.len() % 2, 0, "UTF-16LE 字节数应为偶数");
+        let utf16 = bytes
+            .chunks_exact(2)
+            .map(|pair| u16::from_le_bytes([pair[0], pair[1]]))
+            .collect::<Vec<_>>();
+        String::from_utf16(&utf16).expect("PowerShell 脚本应为有效 UTF-16LE")
+    }
+
+    /// 生成测试专用临时目录；参数为空，返回带随机 UUID 的唯一目录路径。
+    fn unique_temp_dir() -> PathBuf {
+        std::env::temp_dir().join(format!("tht-panel-{}", Uuid::new_v4()))
+    }
 
     fn workspace() -> Workspace {
         Workspace {
@@ -311,6 +359,176 @@ mod tests {
             cols: 80,
             rows: 24,
         }
+    }
+
+    /// 验证重复的请求供应商无效，并回退到唯一合法的项目默认供应商。
+    #[test]
+    fn duplicate_requested_provider_falls_back_to_unique_valid_default() {
+        let mut global = GlobalConfig::default();
+        global.providers = vec![
+            provider("duplicate", "claude", legacy_config("duplicate-valid")),
+            provider("duplicate", "gemini", legacy_config("duplicate-illegal")),
+            provider(
+                "project-default",
+                "claude",
+                legacy_config("project-default"),
+            ),
+        ];
+        let mut ws = workspace();
+        ws.default_provider_id = Some("project-default".to_string());
+
+        let launch =
+            build_resolved_launch(&global, Some(&ws), &request("duplicate"), Path::new("."))
+                .expect("重复请求供应商应回退到项目默认供应商");
+        let script = decode_script(&launch);
+
+        assert_eq!(launch.kind, "claude");
+        assert!(script.contains("project-default-model"));
+        assert!(!script.contains("duplicate-valid-model"));
+    }
+
+    /// 验证不存在的请求供应商不会报错，而会回退到唯一合法的项目默认供应商。
+    #[test]
+    fn missing_requested_provider_falls_back_to_unique_valid_default() {
+        let mut global = GlobalConfig::default();
+        global.providers = vec![provider(
+            "project-default",
+            "claude",
+            legacy_config("project-default"),
+        )];
+        let mut ws = workspace();
+        ws.default_provider_id = Some("project-default".to_string());
+
+        let launch = build_resolved_launch(&global, Some(&ws), &request("missing"), Path::new("."))
+            .expect("不存在的请求供应商应回退到项目默认供应商");
+
+        assert_eq!(launch.kind, "claude");
+        assert!(decode_script(&launch).contains("project-default-model"));
+    }
+
+    /// 验证不支持的请求供应商驱动无效，并回退到唯一合法的项目默认供应商。
+    #[test]
+    fn unsupported_requested_provider_driver_falls_back_to_unique_valid_default() {
+        let mut global = GlobalConfig::default();
+        global.providers = vec![
+            provider("requested", "gemini", legacy_config("illegal-request")),
+            provider(
+                "project-default",
+                "claude",
+                legacy_config("project-default"),
+            ),
+        ];
+        let mut ws = workspace();
+        ws.default_provider_id = Some("project-default".to_string());
+
+        let launch =
+            build_resolved_launch(&global, Some(&ws), &request("requested"), Path::new("."))
+                .expect("非法请求供应商应回退到项目默认供应商");
+        let script = decode_script(&launch);
+
+        assert_eq!(launch.kind, "claude");
+        assert!(script.contains("project-default-model"));
+        assert!(!script.contains("illegal-request-model"));
+    }
+
+    /// 验证重复的项目默认供应商无效，即使其中恰有一个条目的驱动合法。
+    #[test]
+    fn duplicate_default_provider_is_ignored_as_system_fallback() {
+        let mut global = GlobalConfig::default();
+        global.providers = vec![
+            provider("duplicate", "claude", legacy_config("duplicate-valid")),
+            provider("duplicate", "gemini", legacy_config("duplicate-illegal")),
+        ];
+        let mut ws = workspace();
+        ws.default_provider_id = Some("duplicate".to_string());
+        let mut req = request("unused");
+        req.provider_id = None;
+        req.kind = "codex".to_string();
+
+        let launch = build_resolved_launch(&global, Some(&ws), &req, Path::new("."))
+            .expect("重复项目默认供应商应进入系统回退");
+
+        assert_eq!(launch.kind, "codex");
+        assert!(!decode_script(&launch).contains("duplicate-valid-model"));
+    }
+
+    /// 验证不支持的项目默认供应商驱动无效，并按请求类型进入系统回退。
+    #[test]
+    fn unsupported_default_provider_driver_is_ignored_as_system_fallback() {
+        let mut global = GlobalConfig::default();
+        global.providers = vec![provider(
+            "project-default",
+            "gemini",
+            legacy_config("illegal-driver"),
+        )];
+        let mut ws = workspace();
+        ws.default_provider_id = Some("project-default".to_string());
+        let mut req = request("unused");
+        req.provider_id = None;
+        req.kind = "codex".to_string();
+
+        let launch = build_resolved_launch(&global, Some(&ws), &req, Path::new("."))
+            .expect("非法项目默认供应商应进入系统回退");
+
+        assert_eq!(launch.kind, "codex");
+        assert!(!decode_script(&launch).contains("illegal-driver-model"));
+    }
+
+    /// 验证系统回退忽略全局和工作空间旧配置，仅生成裸 AI 启动命令。
+    #[test]
+    fn system_fallback_ignores_legacy_agent_configs() {
+        let mut global = GlobalConfig::default();
+        global.claude_defaults = legacy_config("global-claude");
+        global.codex_defaults = legacy_config("global-codex");
+        let legacy_markers = ["global-claude", "global-codex", "workspace"];
+
+        for (kind, use_global_config) in [("claude", true), ("claude", false), ("codex", true)] {
+            let mut ws = workspace();
+            ws.default_provider_id = None;
+            ws.use_global_config = use_global_config;
+            ws.config = Some(legacy_config("workspace"));
+            let mut req = request("unused");
+            req.provider_id = None;
+            req.kind = kind.to_string();
+
+            let launch = build_resolved_launch(&global, Some(&ws), &req, Path::new("."))
+                .expect("系统回退应生成启动描述");
+            let script = decode_script(&launch);
+
+            assert!(launch.args.iter().any(|arg| arg == "-NoExit"));
+            assert!(launch.args.iter().any(|arg| arg == "-EncodedCommand"));
+            assert!(launch.env.is_empty(), "系统回退不应注入应用环境变量");
+            for marker in legacy_markers {
+                assert!(!script.contains(marker), "脚本不应包含旧配置标记 {marker}");
+            }
+        }
+    }
+
+    /// 验证 Codex 系统回退不注入或创建隔离 CODEX_HOME，并只清理本测试唯一目录。
+    #[test]
+    fn codex_system_fallback_does_not_create_isolated_home() {
+        let config_dir = unique_temp_dir();
+        let mut global = GlobalConfig::default();
+        global.claude_defaults = legacy_config("global-claude");
+        global.codex_defaults = legacy_config("global-codex");
+        let mut ws = workspace();
+        ws.default_provider_id = None;
+        ws.use_global_config = false;
+        ws.config = Some(legacy_config("workspace"));
+        let mut req = request("unused");
+        req.provider_id = None;
+        req.kind = "codex".to_string();
+
+        let launch = build_resolved_launch(&global, Some(&ws), &req, &config_dir)
+            .expect("Codex 系统回退应生成启动描述");
+        let has_codex_home_env = launch.env.iter().any(|(key, _)| key == "CODEX_HOME");
+        let codex_homes_exists = config_dir.join("codex-homes").exists();
+        if config_dir.exists() {
+            std::fs::remove_dir_all(&config_dir).expect("应只清理本测试创建的唯一临时目录");
+        }
+
+        assert!(!has_codex_home_env, "系统回退不应注入 CODEX_HOME");
+        assert!(!codex_homes_exists, "系统回退不应创建 codex-homes");
     }
 
     #[test]
