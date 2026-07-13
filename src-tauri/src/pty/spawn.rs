@@ -8,7 +8,8 @@
 //!
 //! 用 `-EncodedCommand` 规避引号地狱（base64 的是 UTF-16LE 字节）。唯一合法的命名供应商
 //! 使用自身配置；没有合法供应商时不注入应用配置，裸启动 AI 并沿用用户系统配置。
-//! env 注入仅在命名供应商有值时进行、不进命令行；命名 codex 额外生成隔离的 CODEX_HOME。
+//! env 注入仅在命名供应商有值时进行、不进命令行；命名 Claude 通过应用私有 settings
+//! 覆盖用户配置，命名 Codex 额外生成隔离的 CODEX_HOME。
 //! **绝不修改用户的 ~/.claude 或 ~/.codex 配置文件。**
 
 use std::path::Path;
@@ -43,7 +44,7 @@ pub struct ResolvedLaunch {
 ///   - `global`：全局配置（提供 shell_path 与命名供应商）；
 ///   - `ws`：目标工作空间（None 表示纯 shell / 未绑定，cwd 退化到用户主目录）；
 ///   - `req`：启动请求（kind / resume / cols / rows）；
-///   - `config_dir`：应用配置目录（仅用于命名 Codex 生成隔离 CODEX_HOME）。
+///   - `config_dir`：应用配置目录（用于命名供应商生成隔离配置）。
 /// 返回：ResolvedLaunch 或 AppError。
 pub fn build_resolved_launch(
     global: &GlobalConfig,
@@ -107,6 +108,15 @@ pub fn build_resolved_launch(
         "codex" => "codex",
         _ => "claude",
     };
+
+    // Claude 的用户 settings 会覆盖父进程环境变量；命名供应商用 flag 层 settings 保证隔离。
+    if kind == "claude" {
+        if let Some(profile) = provider {
+            let settings_path = prepare_claude_settings(config_dir, &profile.id, &resolved_cfg)?;
+            ai_args.push("--settings".to_string());
+            ai_args.push(settings_path);
+        }
+    }
 
     // --model 参数（有值才加）。
     if let Some(model) = non_empty(&resolved_cfg.model) {
@@ -219,6 +229,37 @@ fn unique_valid_provider<'a>(global: &'a GlobalConfig, id: &str) -> Option<&'a P
         return None;
     }
     Some(provider)
+}
+
+/// 生成命名 Claude 供应商专用的 flag 层 settings 文件。
+///
+/// 目录：`{config_dir}/claude-settings/{安全供应商键}/settings.json`。供应商标识使用
+/// URL-safe Base64 编码，避免路径分隔符或 `..` 逃逸应用配置目录。文件显式写入三项
+/// `ANTHROPIC_*` 环境变量，使空配置也能覆盖用户 settings 中的旧供应商值。
+/// 参数：config_dir——应用配置目录；provider_id——供应商标识；cfg——供应商 AI 配置。
+/// 返回：settings.json 绝对或基于 config_dir 的路径字符串，失败时返回 AppError。
+pub(crate) fn prepare_claude_settings(
+    config_dir: &Path,
+    provider_id: &str,
+    cfg: &AgentConfig,
+) -> Result<String, AppError> {
+    let provider_key =
+        base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(provider_id.as_bytes());
+    let settings_dir = config_dir.join("claude-settings").join(provider_key);
+    std::fs::create_dir_all(&settings_dir)?;
+
+    let api_key = non_empty(&cfg.api_key).unwrap_or_default();
+    let settings = serde_json::json!({
+        "env": {
+            "ANTHROPIC_BASE_URL": non_empty(&cfg.base_url).unwrap_or_default(),
+            "ANTHROPIC_API_KEY": api_key,
+            "ANTHROPIC_AUTH_TOKEN": api_key,
+        }
+    });
+    let settings_path = settings_dir.join("settings.json");
+    std::fs::write(&settings_path, serde_json::to_vec_pretty(&settings)?)?;
+
+    Ok(settings_path.to_string_lossy().to_string())
 }
 
 /// 生成并写入隔离的 CODEX_HOME 目录及其 config.toml。
@@ -377,9 +418,13 @@ mod tests {
         let mut ws = workspace();
         ws.default_provider_id = Some("project-default".to_string());
 
-        let launch =
-            build_resolved_launch(&global, Some(&ws), &request("duplicate"), Path::new("."))
-                .expect("重复请求供应商应回退到项目默认供应商");
+        let launch = build_resolved_launch(
+            &global,
+            Some(&ws),
+            &request("duplicate"),
+            &unique_temp_dir(),
+        )
+        .expect("重复请求供应商应回退到项目默认供应商");
         let script = decode_script(&launch);
 
         assert_eq!(launch.kind, "claude");
@@ -399,8 +444,9 @@ mod tests {
         let mut ws = workspace();
         ws.default_provider_id = Some("project-default".to_string());
 
-        let launch = build_resolved_launch(&global, Some(&ws), &request("missing"), Path::new("."))
-            .expect("不存在的请求供应商应回退到项目默认供应商");
+        let launch =
+            build_resolved_launch(&global, Some(&ws), &request("missing"), &unique_temp_dir())
+                .expect("不存在的请求供应商应回退到项目默认供应商");
 
         assert_eq!(launch.kind, "claude");
         assert!(decode_script(&launch).contains("project-default-model"));
@@ -421,9 +467,13 @@ mod tests {
         let mut ws = workspace();
         ws.default_provider_id = Some("project-default".to_string());
 
-        let launch =
-            build_resolved_launch(&global, Some(&ws), &request("requested"), Path::new("."))
-                .expect("非法请求供应商应回退到项目默认供应商");
+        let launch = build_resolved_launch(
+            &global,
+            Some(&ws),
+            &request("requested"),
+            &unique_temp_dir(),
+        )
+        .expect("非法请求供应商应回退到项目默认供应商");
         let script = decode_script(&launch);
 
         assert_eq!(launch.kind, "claude");
@@ -531,6 +581,72 @@ mod tests {
         assert!(!codex_homes_exists, "系统回退不应创建 codex-homes");
     }
 
+    /// 验证命名 Claude 供应商通过应用私有 settings 覆盖用户级环境配置。
+    #[test]
+    fn named_claude_provider_uses_isolated_flag_settings() {
+        let config_dir = unique_temp_dir();
+        let provider_id = "claude/../../provider-b";
+        let provider_key =
+            base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(provider_id.as_bytes());
+        let expected_settings = config_dir
+            .join("claude-settings")
+            .join(provider_key)
+            .join("settings.json");
+        let mut global = GlobalConfig::default();
+        global.providers = vec![provider(
+            provider_id,
+            "claude",
+            AgentConfig {
+                base_url: Some("https://provider-b.example.com".to_string()),
+                api_key: Some("provider-b-test-key".to_string()),
+                model: Some("claude-provider-b".to_string()),
+                extra_args: Vec::new(),
+            },
+        )];
+
+        let launch = build_resolved_launch(
+            &global,
+            Some(&workspace()),
+            &request(provider_id),
+            &config_dir,
+        )
+        .expect("命名 Claude 供应商应生成启动描述");
+        let script = decode_script(&launch);
+        let expected_path = expected_settings.to_string_lossy();
+
+        assert!(script.contains(&format!("'--settings' {}", quote_arg(&expected_path))));
+        let settings_text = std::fs::read_to_string(&expected_settings)
+            .expect("命名 Claude 供应商应生成独立 settings.json");
+        let settings: serde_json::Value =
+            serde_json::from_str(&settings_text).expect("Claude settings 应为有效 JSON");
+        assert_eq!(
+            settings["env"]["ANTHROPIC_BASE_URL"],
+            "https://provider-b.example.com"
+        );
+        assert_eq!(
+            settings["env"]["ANTHROPIC_AUTH_TOKEN"],
+            "provider-b-test-key"
+        );
+        assert_eq!(settings["env"]["ANTHROPIC_API_KEY"], "provider-b-test-key");
+    }
+
+    /// 验证未选择合法 Claude 供应商时不创建或传入应用 settings。
+    #[test]
+    fn claude_system_fallback_does_not_use_flag_settings() {
+        let config_dir = unique_temp_dir();
+        let mut ws = workspace();
+        ws.default_provider_id = None;
+        let mut req = request("unused");
+        req.provider_id = None;
+
+        let launch = build_resolved_launch(&GlobalConfig::default(), Some(&ws), &req, &config_dir)
+            .expect("Claude 系统回退应生成启动描述");
+
+        assert!(!decode_script(&launch).contains("'--settings'"));
+        assert!(!config_dir.join("claude-settings").exists());
+    }
+
+    /// 验证命名供应商优先于项目旧配置，并注入自身连接参数。
     #[test]
     fn named_provider_overrides_project_legacy_config() {
         let mut global = GlobalConfig::default();
@@ -550,7 +666,7 @@ mod tests {
             &global,
             Some(&workspace()),
             &request("claude-b"),
-            Path::new("."),
+            &unique_temp_dir(),
         )
         .expect("命名供应商应生成启动参数");
 
@@ -559,6 +675,7 @@ mod tests {
         assert_eq!(launch.kind, "claude");
     }
 
+    /// 验证供应商驱动可覆盖会话遗留类型，确保跨驱动切换正确。
     #[test]
     fn provider_driver_is_authoritative_for_cross_driver_switch() {
         let mut global = GlobalConfig::default();
@@ -571,13 +688,15 @@ mod tests {
 
         let mut req = request("claude-a");
         req.kind = "codex".to_string();
-        let launch = build_resolved_launch(&global, Some(&workspace()), &req, Path::new("."))
+        let launch = build_resolved_launch(&global, Some(&workspace()), &req, &unique_temp_dir())
             .expect("供应商驱动应覆盖旧会话类型");
 
         assert_eq!(launch.kind, "claude");
         assert_eq!(launch.title, "claude");
     }
 
+    /// 断言启动描述包含指定环境变量。
+    /// 参数：launch——启动描述；key——变量名；value——期望值；返回：无。
     fn expect_env(launch: &ResolvedLaunch, key: &str, value: &str) {
         assert!(launch
             .env

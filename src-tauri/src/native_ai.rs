@@ -6,7 +6,7 @@ use tauri::State;
 
 use crate::config::model::ProviderProfile;
 use crate::error::AppError;
-use crate::pty::spawn::prepare_codex_home;
+use crate::pty::spawn::{prepare_claude_settings, prepare_codex_home};
 use crate::state::AppState;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -24,6 +24,9 @@ pub struct NativePromptRequest {
     pub prompt: String,
 }
 
+/// 根据供应商配置构建原生 AI CLI 命令，不经过 PowerShell。
+/// 参数：provider——命名供应商；prompt——完整提示词；config_dir——应用配置目录。
+/// 返回：可直接执行的命令描述，配置生成失败时返回 AppError。
 pub fn build_native_command(
     provider: &ProviderProfile,
     prompt: &str,
@@ -34,7 +37,13 @@ pub fn build_native_command(
 
     match provider.driver.as_str() {
         "claude" => {
-            args.push("--print".to_string());
+            let settings_path =
+                prepare_claude_settings(config_dir, &provider.id, &provider.config)?;
+            args.extend([
+                "--settings".to_string(),
+                settings_path,
+                "--print".to_string(),
+            ]);
             if let Some(model) = non_empty(&provider.config.model) {
                 args.extend(["--model".to_string(), model]);
             }

@@ -36,6 +36,9 @@ use crate::pty::spawn::ResolvedLaunch;
 const IDLE_AFTER: Duration = Duration::from_secs(2);
 /// reader 单次读取缓冲大小。
 const READ_BUF: usize = 8192;
+/// PTY 子进程使用的终端能力标识，确保 CLI 输出 ANSI 256 色与真彩色序列。
+const TERMINAL_ENVIRONMENT: [(&str, &str); 2] =
+    [("TERM", "xterm-256color"), ("COLORTERM", "truecolor")];
 
 /// 会话表类型别名。
 type SessionMap = Arc<Mutex<HashMap<String, Arc<Mutex<PtySession>>>>>;
@@ -128,14 +131,7 @@ impl PtyManager {
             .map_err(|e| AppError::Pty(format!("openpty 失败: {e}")))?;
 
         // 组装命令：宿主 + 参数 + cwd + env 注入。
-        let mut cmd = CommandBuilder::new(&launch.program);
-        for a in &launch.args {
-            cmd.arg(a);
-        }
-        cmd.cwd(&launch.cwd);
-        for (k, v) in &launch.env {
-            cmd.env(k, v);
-        }
+        let cmd = build_command(&launch);
 
         let child = pair
             .slave
@@ -364,4 +360,46 @@ impl PtyManager {
 /// 参数：无；返回：时间戳字符串。
 fn now_iso() -> String {
     chrono::Utc::now().to_rfc3339()
+}
+
+/// 根据解析后的启动描述构建 PTY 子进程命令并注入终端能力变量。
+/// 参数：launch——程序、参数、目录与供应商环境；返回：可交给 PTY 启动的命令。
+fn build_command(launch: &ResolvedLaunch) -> CommandBuilder {
+    let mut command = CommandBuilder::new(&launch.program);
+    for arg in &launch.args {
+        command.arg(arg);
+    }
+    command.cwd(&launch.cwd);
+    for &(key, value) in &TERMINAL_ENVIRONMENT {
+        command.env(key, value);
+    }
+    for (key, value) in &launch.env {
+        command.env(key, value);
+    }
+    command
+}
+
+#[cfg(test)]
+mod tests {
+    use super::build_command;
+    use crate::pty::spawn::ResolvedLaunch;
+    use std::ffi::OsStr;
+
+    /// 验证实际启动命令声明 ANSI 256 色与真彩色终端能力。
+    #[test]
+    fn command_enables_ansi_color_and_truecolor() {
+        let launch = ResolvedLaunch {
+            program: "powershell.exe".to_string(),
+            args: Vec::new(),
+            cwd: ".".to_string(),
+            env: Vec::new(),
+            title: "PowerShell".to_string(),
+            kind: "shell".to_string(),
+            resumed_from: None,
+        };
+        let command = build_command(&launch);
+
+        assert_eq!(command.get_env("TERM"), Some(OsStr::new("xterm-256color")));
+        assert_eq!(command.get_env("COLORTERM"), Some(OsStr::new("truecolor")));
+    }
 }
