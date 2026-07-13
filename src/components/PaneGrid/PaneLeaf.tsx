@@ -3,7 +3,6 @@
  * 标题栏：项目名 + Tab 条（每 Tab 状态点+会话名+关闭） + 操作按钮组。
  * 主体渲染当前激活 Tab 的 TerminalPane（或空占位提示）。
  */
-import { useState } from "react";
 import type { LeafNode, SessionState } from "../../api/types";
 import { useLayoutStore } from "../../store/layoutStore";
 import { useSessionStore } from "../../store/sessionStore";
@@ -21,8 +20,6 @@ import {
   X,
   ICON_DEFAULTS,
 } from "../ui/icons";
-
-const PANE_DRAG_TYPE = "application/x-tht-pane";
 
 /* ---------- PaneTab 子组件 ---------- */
 
@@ -84,16 +81,45 @@ function PaneTab({ leafId, sessionId, active }: PaneTabProps): React.ReactElemen
 
 interface PaneLeafProps {
   leaf: LeafNode;
+  dropTargetLeafId: string | null;
+  onPaneDragStart: (
+    leafId: string,
+    event: React.DragEvent<HTMLElement>,
+  ) => void;
+  onPaneDragOver: (
+    leafId: string,
+    event: React.DragEvent<HTMLElement>,
+  ) => void;
+  onPaneDragLeave: (
+    leafId: string,
+    event: React.DragEvent<HTMLElement>,
+  ) => void;
+  onPaneDrop: (
+    leafId: string,
+    event: React.DragEvent<HTMLElement>,
+  ) => void;
+  onPaneDragEnd: () => void;
 }
 
-export function PaneLeaf({ leaf }: PaneLeafProps): React.ReactElement {
+/**
+ * 渲染单个分屏叶子，并把拖放事件交给 PaneGrid 的共享处理器。
+ * @param props 叶子数据、共享目标 ID 与拖放生命周期处理器。
+ * @returns 单个窗格对应的 React 元素。
+ */
+export function PaneLeaf({
+  leaf,
+  dropTargetLeafId,
+  onPaneDragStart,
+  onPaneDragOver,
+  onPaneDragLeave,
+  onPaneDrop,
+  onPaneDragEnd,
+}: PaneLeafProps): React.ReactElement {
   const activePaneId = useLayoutStore((s) => s.activePaneId);
   const setActive = useLayoutStore((s) => s.setActive);
   const toggleLock = useLayoutStore((s) => s.toggleLock);
   const splitPane = useLayoutStore((s) => s.splitPane);
   const closePane = useLayoutStore((s) => s.closePane);
-  const swapPaneContents = useLayoutStore((s) => s.swapPaneContents);
-  const [dropTarget, setDropTarget] = useState(false);
 
   const nativeConversationId = leaf.activeSessionId
     ? parseNativeConversationTabId(leaf.activeSessionId)
@@ -115,38 +141,23 @@ export function PaneLeaf({ leaf }: PaneLeafProps): React.ReactElement {
   );
 
   const isActive = activePaneId === leaf.id;
+  const isDropTarget = dropTargetLeafId === leaf.id;
 
   return (
     <div
-      className={`pane-leaf${isActive ? " pane-active" : ""}${dropTarget ? " pane-drop-target" : ""}`}
+      className={`pane-leaf${isActive ? " pane-active" : ""}${isDropTarget ? " pane-drop-target" : ""}`}
       onClick={() => setActive(leaf.id)}
-      onDragOver={(event) => {
-        if (!event.dataTransfer.types.includes(PANE_DRAG_TYPE)) return;
-        event.preventDefault();
-        setDropTarget(true);
-      }}
-      onDragLeave={(event) => {
-        if (!event.currentTarget.contains(event.relatedTarget as Node | null)) {
-          setDropTarget(false);
-        }
-      }}
-      onDrop={(event) => {
-        event.preventDefault();
-        setDropTarget(false);
-        const sourceLeafId = event.dataTransfer.getData(PANE_DRAG_TYPE);
-        if (sourceLeafId) swapPaneContents(sourceLeafId, leaf.id);
-      }}
+      onDragOver={(event) => onPaneDragOver(leaf.id, event)}
+      onDragLeave={(event) => onPaneDragLeave(leaf.id, event)}
+      onDrop={(event) => onPaneDrop(leaf.id, event)}
     >
       <div className="pane-titlebar">
         <span
           className="pane-drag-handle"
           draggable
           title="拖动到其他窗口交换位置"
-          onDragStart={(event) => {
-            event.stopPropagation();
-            event.dataTransfer.effectAllowed = "move";
-            event.dataTransfer.setData(PANE_DRAG_TYPE, leaf.id);
-          }}
+          onDragStart={(event) => onPaneDragStart(leaf.id, event)}
+          onDragEnd={onPaneDragEnd}
         >
           <GripVertical size={14} strokeWidth={1.5} />
         </span>

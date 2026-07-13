@@ -49,6 +49,49 @@ describe("工作区窗口操作", () => {
     expect(right.activeSessionId).toBe("chat:first");
   });
 
+  it("非空窗口与空窗口交换时仅交换会话内容", () => {
+    const treeWithEmptyLeaf: PaneNode = {
+      type: "split",
+      id: "empty-root",
+      direction: "vertical",
+      ratio: 0.35,
+      children: [
+        {
+          type: "leaf",
+          id: "occupied",
+          sessionIds: ["chat:active", "chat:background"],
+          activeSessionId: "chat:active",
+          locked: true,
+        },
+        {
+          type: "leaf",
+          id: "empty",
+          sessionIds: [],
+          activeSessionId: null,
+          locked: false,
+        },
+      ],
+    };
+
+    const swapped = swapLeafContents(treeWithEmptyLeaf, "occupied", "empty");
+    if (swapped.type !== "split") throw new Error("测试树必须是 split");
+    const [occupied, empty] = swapped.children;
+    if (occupied.type !== "leaf" || empty.type !== "leaf") {
+      throw new Error("测试子节点必须是 leaf");
+    }
+
+    expect(swapped.id).toBe("empty-root");
+    expect(swapped.ratio).toBe(0.35);
+    expect(occupied.id).toBe("occupied");
+    expect(occupied.locked).toBe(true);
+    expect(occupied.sessionIds).toEqual([]);
+    expect(occupied.activeSessionId).toBeNull();
+    expect(empty.id).toBe("empty");
+    expect(empty.locked).toBe(false);
+    expect(empty.sessionIds).toEqual(["chat:active", "chat:background"]);
+    expect(empty.activeSessionId).toBe("chat:active");
+  });
+
   it("保存工作区时复制布局，后续编辑不会污染快照", () => {
     const snapshot = createSavedWorkspaceSnapshot({
       id: "saved-1",

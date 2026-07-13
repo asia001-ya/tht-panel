@@ -56,19 +56,24 @@
 }
 .pane-panel {
   overflow: clip;
+  min-width: 0;
+  min-height: 0;
 }
 
 .pane-divider {
+  position: relative;
+  z-index: 2;
   background: transparent;
   flex: 0 0 auto;
+  touch-action: none;
   transition: background 0.15s;
 }
 [data-panel-group-direction="horizontal"] > .pane-divider {
-  width: 6px;
+  width: 8px;
   cursor: col-resize;
 }
 [data-panel-group-direction="vertical"] > .pane-divider {
-  height: 6px;
+  height: 8px;
   cursor: row-resize;
 }
 .pane-divider:hover,
