@@ -11,8 +11,14 @@ import type {
   PersistedNode,
   PersistedLeaf,
   PersistedSplit,
+  SavedWorkspaceLayout,
 } from "../api/types";
 import { layoutGet, layoutSave } from "../api/commands";
+import {
+  clonePaneTree,
+  createSavedWorkspaceSnapshot,
+  swapLeafContents,
+} from "./layoutOperations";
 
 let persistTimer: ReturnType<typeof setTimeout> | null = null;
 
@@ -87,6 +93,7 @@ function removeLeaf(node: PaneNode, leafId: string): PaneNode {
 interface LayoutState {
   tree: PaneNode;
   activePaneId: string | null;
+  savedWorkspaces: SavedWorkspaceLayout[];
   load: () => Promise<void>;
   persist: () => void;
   splitPane: (leafId: string, direction: "horizontal" | "vertical") => string;
@@ -104,17 +111,26 @@ interface LayoutState {
   findLeafBySession: (sessionId: string) => string | null;
   /** 求落点 leaf：优先活动且未锁；否则先序第一个未锁；全锁返回 null */
   findTargetLeaf: () => string | null;
+  swapPaneContents: (sourceLeafId: string, targetLeafId: string) => void;
+  saveCurrentWorkspace: (name: string) => void;
+  restoreSavedWorkspace: (savedWorkspaceId: string) => void;
+  removeSavedWorkspace: (savedWorkspaceId: string) => void;
 }
 
 export const useLayoutStore = create<LayoutState>((set, get) => ({
   tree: makeLeaf(),
   activePaneId: null,
+  savedWorkspaces: [],
 
   load: async () => {
     const layout = await layoutGet();
     if (!layout.tree) {
       const leaf = makeLeaf();
-      set({ tree: leaf, activePaneId: leaf.id });
+      set({
+        tree: leaf,
+        activePaneId: leaf.id,
+        savedWorkspaces: layout.savedWorkspaces ?? [],
+      });
       return;
     }
     const tree = toRuntime(layout.tree);
@@ -123,18 +139,23 @@ export const useLayoutStore = create<LayoutState>((set, get) => ({
       layout.activePaneId && leaves.some((l) => l.id === layout.activePaneId)
         ? layout.activePaneId
         : (leaves[0]?.id ?? null);
-    set({ tree, activePaneId: active });
+    set({
+      tree,
+      activePaneId: active,
+      savedWorkspaces: layout.savedWorkspaces ?? [],
+    });
   },
 
   persist: () => {
     if (persistTimer !== null) clearTimeout(persistTimer);
     persistTimer = setTimeout(() => {
       persistTimer = null;
-      const { tree, activePaneId } = get();
+      const { tree, activePaneId, savedWorkspaces } = get();
       void layoutSave({
         version: LAYOUT_VERSION,
         tree: toPersisted(tree),
         activePaneId,
+        savedWorkspaces,
       });
     }, 300);
   },
@@ -256,5 +277,42 @@ export const useLayoutStore = create<LayoutState>((set, get) => ({
     }
     const firstUnlocked = leaves.find((l) => !l.locked);
     return firstUnlocked ? firstUnlocked.id : null;
+  },
+
+  swapPaneContents: (sourceLeafId, targetLeafId) => {
+    const tree = swapLeafContents(get().tree, sourceLeafId, targetLeafId);
+    set({ tree, activePaneId: targetLeafId });
+    get().persist();
+  },
+
+  saveCurrentWorkspace: (name) => {
+    const trimmed = name.trim();
+    if (!trimmed) return;
+    const { tree, activePaneId, savedWorkspaces } = get();
+    const snapshot = createSavedWorkspaceSnapshot({
+      id: crypto.randomUUID(),
+      name: trimmed,
+      tree,
+      activePaneId,
+      createdAt: new Date().toISOString(),
+    });
+    set({ savedWorkspaces: [...savedWorkspaces, snapshot] });
+    get().persist();
+  },
+
+  restoreSavedWorkspace: (savedWorkspaceId) => {
+    const saved = get().savedWorkspaces.find((item) => item.id === savedWorkspaceId);
+    if (!saved) return;
+    set({ tree: clonePaneTree(saved.tree), activePaneId: saved.activePaneId });
+    get().persist();
+  },
+
+  removeSavedWorkspace: (savedWorkspaceId) => {
+    set((state) => ({
+      savedWorkspaces: state.savedWorkspaces.filter(
+        (item) => item.id !== savedWorkspaceId,
+      ),
+    }));
+    get().persist();
   },
 }));

@@ -167,7 +167,7 @@ export function TerminalPane({ sessionId }: TerminalPaneProps): React.JSX.Elemen
       <SearchBar search={search} />
       {sessionId === null && (
         <div className="term-placeholder">
-          点击左侧工作空间或历史会话以在此打开终端
+          从菜单打开项目或历史会话
         </div>
       )}
     </div>

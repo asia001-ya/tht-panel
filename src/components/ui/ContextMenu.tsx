@@ -1,6 +1,7 @@
 import { useEffect, useRef } from "react";
 
 export interface ContextMenuItem {
+  id?: string;
   label: string;
   danger?: boolean;
   onClick: () => void;
@@ -40,7 +41,7 @@ export function ContextMenu({
     >
       {items.map((item) => (
         <button
-          key={item.label}
+          key={item.id ?? item.label}
           type="button"
           className={`ws-item-menu-btn${item.danger ? " ws-item-menu-danger" : ""}`}
           onClick={() => { item.onClick(); onClose(); }}

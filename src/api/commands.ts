@@ -13,6 +13,7 @@ import type {
   SessionHistoryEntry,
   PersistedLayout,
   PtyOutputMsg,
+  NativePromptRequest,
 } from "./types";
 
 // ---- PTY 会话 ----
@@ -64,3 +65,7 @@ export const managedSessionDelete = (id: string) =>
 export const aiSessionDetect = (args: {
   workspaceId: string; kind: string; spawnedAt: string; exclude: string[];
 }) => invoke<string | null>("ai_session_detect", args);
+
+// ---- 原生 AI 会话（不经过 PowerShell）----
+export const aiPrompt = (req: NativePromptRequest) =>
+  invoke<string>("ai_prompt", { req });

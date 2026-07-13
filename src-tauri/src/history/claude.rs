@@ -90,8 +90,7 @@ pub fn list(
                 if indexed.contains(&sid) {
                     continue; // 已在索引中，主路径已收录。
                 }
-                let title =
-                    scan_jsonl_title(&path).unwrap_or_else(|| "(无标题会话)".to_string());
+                let title = scan_jsonl_title(&path).unwrap_or_else(|| "(无标题会话)".to_string());
                 out.push(SessionHistoryEntry {
                     session_id: sid,
                     source: "claude".to_string(),
@@ -231,7 +230,12 @@ fn entries_from_index(
                     .and_then(|v| v.as_str())
                     .map(|s| s.to_string())
             })
-            .or_else(|| entry.get("fileMtime").and_then(|v| v.as_i64()).map(ms_to_iso))
+            .or_else(|| {
+                entry
+                    .get("fileMtime")
+                    .and_then(|v| v.as_i64())
+                    .map(ms_to_iso)
+            })
             .unwrap_or_default();
 
         result.push(SessionHistoryEntry {

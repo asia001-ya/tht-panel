@@ -65,25 +65,42 @@ pub fn build_resolved_launch(
         .or_else(|| dirs::home_dir().map(|h| h.to_string_lossy().to_string()))
         .unwrap_or_else(|| ".".to_string());
 
-    let kind = req.kind.clone();
-
     // 纯 shell 模式：只起 PowerShell，不注入 env、不拼 AI 命令。
-    if kind == "shell" {
+    if req.kind == "shell" {
         return Ok(ResolvedLaunch {
             program,
-            args: vec!["-NoLogo".to_string(), "-ExecutionPolicy".to_string(), "Bypass".to_string()],
+            args: vec![
+                "-NoLogo".to_string(),
+                "-ExecutionPolicy".to_string(),
+                "Bypass".to_string(),
+            ],
             cwd,
             env: Vec::new(),
             title: "PowerShell".to_string(),
-            kind,
+            kind: "shell".to_string(),
             resumed_from: None,
         });
     }
 
+    let provider_id = req
+        .provider_id
+        .as_deref()
+        .or_else(|| ws.and_then(|workspace| workspace.default_provider_id.as_deref()));
+    let provider =
+        provider_id.and_then(|id| global.providers.iter().find(|candidate| candidate.id == id));
+    if provider_id.is_some() && provider.is_none() {
+        return Err(AppError::NotFound("供应商不存在".to_string()));
+    }
+    let kind = provider
+        .map(|profile| profile.driver.clone())
+        .unwrap_or_else(|| req.kind.clone());
+
     // AI 模式（claude / codex）：解析该用哪套配置。
     // useGlobalConfig=true 或无独立 config → 用全局默认；否则用工作空间独立配置。
     let use_global = ws.map(|w| w.use_global_config).unwrap_or(true);
-    let resolved_cfg: AgentConfig = if use_global {
+    let resolved_cfg: AgentConfig = if let Some(profile) = provider {
+        profile.config.clone()
+    } else if use_global {
         match kind.as_str() {
             "codex" => global.codex_defaults.clone(),
             _ => global.claude_defaults.clone(),
@@ -136,9 +153,12 @@ pub fn build_resolved_launch(
                 env.push(("OPENAI_API_KEY".to_string(), key));
             }
             // 独立配置：生成隔离 CODEX_HOME + config.toml（含 model / base_url / env_key）。
-            if !use_global {
-                if let Some(ws) = ws {
-                    let codex_home = prepare_codex_home(config_dir, &ws.id, &resolved_cfg)?;
+            if provider.is_some() || !use_global {
+                if let Some(scope_id) = provider
+                    .map(|profile| profile.id.as_str())
+                    .or_else(|| ws.map(|workspace| workspace.id.as_str()))
+                {
+                    let codex_home = prepare_codex_home(config_dir, scope_id, &resolved_cfg)?;
                     env.push(("CODEX_HOME".to_string(), codex_home));
                 }
             }
@@ -148,6 +168,7 @@ pub fn build_resolved_launch(
                 env.push(("ANTHROPIC_BASE_URL".to_string(), base));
             }
             if let Some(key) = non_empty(&resolved_cfg.api_key) {
+                env.push(("ANTHROPIC_API_KEY".to_string(), key.clone()));
                 env.push(("ANTHROPIC_AUTH_TOKEN".to_string(), key));
             }
         }
@@ -179,7 +200,12 @@ pub fn build_resolved_launch(
         "codex" => "codex",
         _ => "claude",
     };
-    let title = if req.resume_session_id.as_deref().map(|s| !s.trim().is_empty()).unwrap_or(false) {
+    let title = if req
+        .resume_session_id
+        .as_deref()
+        .map(|s| !s.trim().is_empty())
+        .unwrap_or(false)
+    {
         format!("续: {base_title}")
     } else {
         base_title.to_string()
@@ -202,7 +228,7 @@ pub fn build_resolved_launch(
 /// 使模型 / base_url 的配置改动即时生效（该目录由本应用独占管理，不涉及用户 ~/.codex）。
 /// 参数：config_dir——应用配置目录；ws_id——工作空间 id；cfg——已解析的 AI 配置。
 /// 返回：CODEX_HOME 绝对路径字符串或 AppError。
-fn prepare_codex_home(
+pub(crate) fn prepare_codex_home(
     config_dir: &Path,
     ws_id: &str,
     cfg: &AgentConfig,
@@ -257,4 +283,87 @@ fn encode_powershell_command(script: &str) -> String {
         .flat_map(|u| u.to_le_bytes())
         .collect();
     base64::engine::general_purpose::STANDARD.encode(utf16)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::model::ProviderProfile;
+
+    fn workspace() -> Workspace {
+        Workspace {
+            id: "project-1".to_string(),
+            name: "项目".to_string(),
+            path: ".".to_string(),
+            agent: "claude".to_string(),
+            use_global_config: true,
+            default_provider_id: Some("claude-b".to_string()),
+            ..Workspace::default()
+        }
+    }
+
+    fn request(provider_id: &str) -> SpawnRequest {
+        SpawnRequest {
+            workspace_id: Some("project-1".to_string()),
+            kind: "claude".to_string(),
+            provider_id: Some(provider_id.to_string()),
+            resume_session_id: None,
+            cols: 80,
+            rows: 24,
+        }
+    }
+
+    #[test]
+    fn named_provider_overrides_project_legacy_config() {
+        let mut global = GlobalConfig::default();
+        global.providers = vec![ProviderProfile {
+            id: "claude-b".to_string(),
+            name: "Claude B".to_string(),
+            driver: "claude".to_string(),
+            config: AgentConfig {
+                base_url: Some("https://b.example.com".to_string()),
+                api_key: Some("key-b".to_string()),
+                model: Some("claude-b-model".to_string()),
+                extra_args: Vec::new(),
+            },
+        }];
+
+        let launch = build_resolved_launch(
+            &global,
+            Some(&workspace()),
+            &request("claude-b"),
+            Path::new("."),
+        )
+        .expect("命名供应商应生成启动参数");
+
+        expect_env(&launch, "ANTHROPIC_BASE_URL", "https://b.example.com");
+        expect_env(&launch, "ANTHROPIC_AUTH_TOKEN", "key-b");
+        assert_eq!(launch.kind, "claude");
+    }
+
+    #[test]
+    fn provider_driver_is_authoritative_for_cross_driver_switch() {
+        let mut global = GlobalConfig::default();
+        global.providers = vec![ProviderProfile {
+            id: "claude-a".to_string(),
+            name: "Claude A".to_string(),
+            driver: "claude".to_string(),
+            config: AgentConfig::default(),
+        }];
+
+        let mut req = request("claude-a");
+        req.kind = "codex".to_string();
+        let launch = build_resolved_launch(&global, Some(&workspace()), &req, Path::new("."))
+            .expect("供应商驱动应覆盖旧会话类型");
+
+        assert_eq!(launch.kind, "claude");
+        assert_eq!(launch.title, "claude");
+    }
+
+    fn expect_env(launch: &ResolvedLaunch, key: &str, value: &str) {
+        assert!(launch
+            .env
+            .iter()
+            .any(|(actual_key, actual_value)| actual_key == key && actual_value == value));
+    }
 }

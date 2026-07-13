@@ -25,6 +25,11 @@ export {
   Send,
   PanelLeftClose,
   PanelLeftOpen,
+  Pencil,
+  Trash2,
+  GripVertical,
+  LayoutTemplate,
+  Save,
 } from "lucide-react";
 
 /** 全局图标默认 props */

@@ -70,6 +70,24 @@
 .sidebar-search-clear:hover {
   color: var(--fg);
 }
+.sidebar-save-workspace {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 6px;
+  padding: 0 8px 8px;
+}
+.sidebar-save-confirm {
+  padding: 0 10px;
+  color: var(--accent-fg);
+  background: var(--accent);
+  border: 1px solid var(--accent);
+  border-radius: var(--radius-sm);
+  font-size: 12px;
+}
+.sidebar-save-confirm:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
 
 /* 分组标题 */
 .sidebar-group-title {
@@ -93,6 +111,63 @@
   text-align: center;
   color: var(--fg-faint);
   font-size: 13px;
+}
+.sidebar-empty-compact {
+  padding: 7px 8px;
+  text-align: left;
+  font-size: 12px;
+}
+
+.saved-workspace-list {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+.saved-workspace-row {
+  display: flex;
+  align-items: center;
+  border-radius: var(--radius-sm);
+}
+.saved-workspace-row:hover {
+  background: var(--sidebar-hover);
+}
+.saved-workspace-open {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 8px;
+  color: var(--fg);
+  background: transparent;
+  border: 0;
+  text-align: left;
+}
+.saved-workspace-open span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.saved-workspace-delete {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  color: var(--fg-faint);
+  background: transparent;
+  border: 0;
+  border-radius: var(--radius-sm);
+  opacity: 0;
+}
+.saved-workspace-row:hover .saved-workspace-delete,
+.saved-workspace-delete:focus-visible {
+  opacity: 1;
+}
+.saved-workspace-delete:hover {
+  color: var(--danger);
 }
 
 /* 工作空间条目 */
@@ -142,6 +217,14 @@
   text-overflow: ellipsis;
   white-space: nowrap;
   font-size: 13px;
+}
+.ws-item-provider {
+  max-width: 76px;
+  overflow: hidden;
+  color: var(--fg-faint);
+  font-size: 10px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .ws-item-hotkey {

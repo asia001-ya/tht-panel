@@ -11,6 +11,13 @@ export type AgentKind = "claude" | "codex" | "shell";
 /** 工作空间级 AI 类型（不含 shell） */
 export type WorkspaceAgent = "claude" | "codex";
 
+/** 可复用的命名供应商配置；同一 driver 可以保存多套配置。 */
+export interface ProviderProfile extends AgentConfig {
+  id: string;
+  name: string;
+  driver: WorkspaceAgent;
+}
+
 /**
  * 一套 AI 连接配置。
  * claude: baseUrl→ANTHROPIC_BASE_URL, apiKey→ANTHROPIC_AUTH_TOKEN, model→--model
@@ -41,6 +48,7 @@ export interface Workspace {
   sortOrder: number; // 侧边栏顺序，Ctrl+1..9 依此序
   createdAt: string;
   keepAlive?: KeepAliveConfig;
+  defaultProviderId?: string;
 }
 
 /** 全局配置 */
@@ -53,6 +61,7 @@ export interface GlobalConfig {
   notifyOnWaiting: boolean; // 等待输入时系统通知，默认 true
   claudeDefaults: AgentConfig; // 「统一配置」时 claude 用这套
   codexDefaults: AgentConfig; // 「统一配置」时 codex 用这套
+  providers: ProviderProfile[];
 }
 
 /** 分屏布局二叉树节点 */
@@ -90,10 +99,19 @@ export interface PersistedSplit {
 }
 export type PersistedNode = PersistedSplit | PersistedLeaf;
 
+export interface SavedWorkspaceLayout {
+  id: string;
+  name: string;
+  tree: PaneNode;
+  activePaneId: string | null;
+  createdAt: string;
+}
+
 export interface PersistedLayout {
   version: number;
   tree: PersistedNode | null;
   activePaneId: string | null;
+  savedWorkspaces?: SavedWorkspaceLayout[];
   window?: { width: number; height: number; maximized: boolean };
 }
 
@@ -127,6 +145,7 @@ export interface SessionHistoryEntry {
 export interface SpawnRequest {
   workspaceId?: string; // 有则从工作空间取 cwd 和配置
   kind: AgentKind; // claude/codex/shell
+  providerId?: string;
   resumeSessionId?: string; // 恢复历史会话时传 AI sessionId
   cols: number;
   rows: number; // 目标 leaf 当前尺寸，避免启动后立刻 resize 重绘
@@ -164,4 +183,20 @@ export interface ManagedSession {
   aiSessionId?: string; // 关联的 AI 侧 session_id（可用于 resume）
   createdAt: string;
   updatedAt: string;
+  providerId?: string;
+  mode?: "native" | "terminal";
+  messages?: ChatMessage[];
+}
+
+export interface ChatMessage {
+  id: string;
+  role: "user" | "assistant";
+  content: string;
+  createdAt: string;
+}
+
+export interface NativePromptRequest {
+  workspaceId: string;
+  providerId: string;
+  prompt: string;
 }

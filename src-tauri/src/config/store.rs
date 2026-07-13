@@ -18,7 +18,9 @@ use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use tauri::Manager;
 
-use crate::config::model::{GlobalConfig, ManagedSession, PersistedLayout, SpawnRequest, Workspace};
+use crate::config::model::{
+    GlobalConfig, ManagedSession, PersistedLayout, SpawnRequest, Workspace,
+};
 use crate::error::AppError;
 
 /// workspaces.json 的顶层结构：版本号 + 工作空间列表。
@@ -243,7 +245,13 @@ impl ConfigStore {
         // 按 workspace_id 查找工作空间（可能为 None，纯 shell 或未绑定）
         let ws: Option<Workspace> = match &req.workspace_id {
             Some(id) => {
-                let found = self.workspaces.lock().workspaces.iter().find(|w| &w.id == id).cloned();
+                let found = self
+                    .workspaces
+                    .lock()
+                    .workspaces
+                    .iter()
+                    .find(|w| &w.id == id)
+                    .cloned();
                 // 指定了 workspace_id 却查不到，视为错误
                 match found {
                     Some(w) => Some(w),
