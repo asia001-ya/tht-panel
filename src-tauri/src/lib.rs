@@ -11,6 +11,7 @@ pub mod commands;
 pub mod config;
 pub mod error;
 pub mod history;
+pub mod native_ai;
 pub mod pty;
 pub mod state;
 pub mod tray;
@@ -67,6 +68,7 @@ pub fn run() {
             commands::session_cmds::managed_session_update,
             commands::session_cmds::managed_session_delete,
             commands::session_cmds::ai_session_detect,
+            native_ai::ai_prompt,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

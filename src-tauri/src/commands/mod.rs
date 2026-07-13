@@ -20,9 +20,7 @@ pub use config_cmds::{
     workspace_save,
 };
 pub use history_cmds::history_list;
-pub use pty_cmds::{
-    pty_attach, pty_detach, pty_kill, pty_list, pty_resize, pty_spawn, pty_write,
-};
+pub use pty_cmds::{pty_attach, pty_detach, pty_kill, pty_list, pty_resize, pty_spawn, pty_write};
 
 /// 退出应用：杀死全部 PTY 会话（防残留 powershell/node，风险 10）后退出进程。
 ///

@@ -52,10 +52,7 @@ pub fn managed_session_update(
 /// 参数：state——全局状态；id——会话记录 id。
 /// 返回：() 或 AppError。
 #[tauri::command]
-pub fn managed_session_delete(
-    state: State<'_, AppState>,
-    id: String,
-) -> Result<(), AppError> {
+pub fn managed_session_delete(state: State<'_, AppState>, id: String) -> Result<(), AppError> {
     state.config.delete_managed_session(&id)
 }
 
@@ -122,7 +119,10 @@ fn detect_claude(
         if exclude.contains(stem.as_str()) {
             continue;
         }
-        let mtime = match std::fs::metadata(&path).ok().and_then(|m| m.modified().ok()) {
+        let mtime = match std::fs::metadata(&path)
+            .ok()
+            .and_then(|m| m.modified().ok())
+        {
             Some(t) => t,
             None => continue,
         };
@@ -177,7 +177,10 @@ fn detect_codex(
             if !fname.starts_with("rollout-") || !fname.ends_with(".jsonl") {
                 continue;
             }
-            let mtime = match std::fs::metadata(&path).ok().and_then(|m| m.modified().ok()) {
+            let mtime = match std::fs::metadata(&path)
+                .ok()
+                .and_then(|m| m.modified().ok())
+            {
                 Some(t) => t,
                 None => continue,
             };

@@ -25,6 +25,17 @@ pub struct AgentConfig {
     pub extra_args: Vec<String>,
 }
 
+/// 命名供应商配置；同一 driver 可保存多套 URL、密钥和模型。
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct ProviderProfile {
+    pub id: String,
+    pub name: String,
+    pub driver: String,
+    #[serde(flatten)]
+    pub config: AgentConfig,
+}
+
 /// Keep-alive 配置：定时向活跃会话发送指令防止超时。
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
@@ -60,6 +71,8 @@ pub struct Workspace {
     pub created_at: String,
     /// Keep-alive 配置
     pub keep_alive: Option<KeepAliveConfig>,
+    /// 项目默认供应商；会话可通过自身 provider_id 覆盖。
+    pub default_provider_id: Option<String>,
 }
 
 /// 全局配置，落盘于 settings.json。
@@ -82,6 +95,8 @@ pub struct GlobalConfig {
     pub claude_defaults: AgentConfig,
     /// 「统一配置」时 codex 用这套
     pub codex_defaults: AgentConfig,
+    /// 用户维护的命名供应商列表。
+    pub providers: Vec<ProviderProfile>,
 }
 
 impl Default for GlobalConfig {
@@ -97,6 +112,7 @@ impl Default for GlobalConfig {
             notify_on_waiting: true,
             claude_defaults: AgentConfig::default(),
             codex_defaults: AgentConfig::default(),
+            providers: Vec::new(),
         }
     }
 }
@@ -145,6 +161,8 @@ pub struct SpawnRequest {
     pub workspace_id: Option<String>,
     /// 会话类型："claude" | "codex" | "shell"
     pub kind: String,
+    /// 会话指定供应商；缺失时使用项目默认供应商。
+    pub provider_id: Option<String>,
     /// 恢复历史会话时传 AI sessionId
     pub resume_session_id: Option<String>,
     /// 目标 leaf 列数
@@ -183,6 +201,8 @@ pub struct PersistedLayout {
     pub tree: Option<serde_json::Value>,
     /// 活动 pane id
     pub active_pane_id: Option<String>,
+    /// 用户命名保存的完整工作区布局；后端只透传。
+    pub saved_workspaces: Vec<serde_json::Value>,
     /// 窗口状态 {width,height,maximized}，透传不解析
     pub window: Option<serde_json::Value>,
 }
@@ -195,6 +215,7 @@ impl Default for PersistedLayout {
             version: 1,
             tree: None,
             active_pane_id: None,
+            saved_workspaces: Vec::new(),
             window: None,
         }
     }
@@ -264,6 +285,21 @@ pub struct ManagedSession {
     pub created_at: String,
     /// 最后活跃时间（更新时机：创建、发送指令、退出）
     pub updated_at: String,
+    /// 会话级供应商覆盖；缺失时继承项目默认供应商。
+    pub provider_id: Option<String>,
+    /// native = 应用内消息界面；terminal/空 = 旧终端会话。
+    pub mode: String,
+    /// 原生会话消息；终端会话为空。
+    pub messages: Vec<ChatMessage>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct ChatMessage {
+    pub id: String,
+    pub role: String,
+    pub content: String,
+    pub created_at: String,
 }
 
 impl Default for ManagedSession {
@@ -277,6 +313,9 @@ impl Default for ManagedSession {
             ai_session_id: None,
             created_at: String::new(),
             updated_at: String::new(),
+            provider_id: None,
+            mode: String::new(),
+            messages: Vec::new(),
         }
     }
 }

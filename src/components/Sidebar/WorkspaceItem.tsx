@@ -6,6 +6,8 @@ import type { Workspace, ManagedSession, SessionState } from "../../api/types";
 import { useWorkspaceStore } from "../../store/workspaceStore";
 import { useUiStore } from "../../store/uiStore";
 import { useSessionStore, badgeFor } from "../../store/sessionStore";
+import { useSettingsStore } from "../../store/settingsStore";
+import { resolveProjectProvider } from "../../lib/providers";
 import { startKeepAlive, stopKeepAlive, isKeepAliveActive } from "../../keepAliveManager";
 import { SessionHistoryList } from "./SessionHistoryList";
 import { ContextMenu } from "../ui/ContextMenu";
@@ -41,6 +43,8 @@ export function WorkspaceItem({
   const removeWorkspace = useWorkspaceStore((s) => s.remove);
   const openWorkspaceDialog = useUiStore((s) => s.openWorkspaceDialog);
   const openConfirm = useUiStore((s) => s.openConfirm);
+  const providers = useSettingsStore((s) => s.config?.providers ?? []);
+  const provider = resolveProjectProvider(ws, providers);
 
   const badge = useSessionStore(() => badgeFor(ws.id));
 
@@ -82,8 +86,8 @@ export function WorkspaceItem({
     items.push({
       label: "删除", danger: true, onClick: () => {
         openConfirm({
-          title: "删除工作空间",
-          message: `确定删除工作空间「${ws.name}」吗？该操作不可撤销。`,
+          title: "删除项目",
+          message: `确定删除项目「${ws.name}」吗？该操作不可撤销。`,
           onConfirm: () => { void removeWorkspace(ws.id); },
         });
       },
@@ -113,6 +117,8 @@ export function WorkspaceItem({
         />
 
         <span className="ws-item-name">{ws.name}</span>
+
+        {provider && <span className="ws-item-provider">{provider.name}</span>}
 
         <button
           type="button"

@@ -3,8 +3,15 @@
  */
 import { useEffect, useState } from "react";
 import type { Workspace, ManagedSession } from "../../api/types";
+import { useSessionStore } from "../../store/sessionStore";
 import { useWorkspaceStore } from "../../store/workspaceStore";
-import { managedSessionUpdate, managedSessionDelete } from "../../api/commands";
+import { useSettingsStore } from "../../store/settingsStore";
+import {
+  managedSessionDelete,
+  managedSessionUpdate,
+  ptyKill,
+} from "../../api/commands";
+import { resolveConversationProvider } from "../../lib/providers";
 import { ContextMenu } from "../ui/ContextMenu";
 import { X } from "../ui/icons";
 
@@ -34,6 +41,7 @@ export function SessionHistoryList({
   const entries = useWorkspaceStore((s) => s.historyCache[ws.id]) as ManagedSession[] | undefined;
   const loading = useWorkspaceStore((s) => s.historyLoading[ws.id] ?? false);
   const loadHistory = useWorkspaceStore((s) => s.loadHistory);
+  const providers = useSettingsStore((s) => s.config?.providers ?? []);
 
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editName, setEditName] = useState("");
@@ -65,6 +73,33 @@ export function SessionHistoryList({
     e.stopPropagation();
     await managedSessionDelete(id);
     void loadHistory(ws.id);
+  };
+
+  const changeProvider = async (
+    session: ManagedSession,
+    providerId?: string,
+  ): Promise<void> => {
+    const currentProvider = resolveConversationProvider(session, ws, providers);
+    const nextSelection = { ...session, providerId };
+    const nextProvider = resolveConversationProvider(nextSelection, ws, providers);
+    const nextKind = nextProvider?.driver ?? ws.agent;
+    const shouldRestart =
+      currentProvider?.id !== nextProvider?.id || nextKind !== session.kind;
+    if (shouldRestart && session.ptySessionId) {
+      await ptyKill(session.ptySessionId).catch(() => undefined);
+      useSessionStore.getState().remove(session.ptySessionId);
+    }
+    const updated: ManagedSession = {
+      ...nextSelection,
+      kind: nextKind,
+      aiSessionId: nextKind === session.kind ? session.aiSessionId : undefined,
+      updatedAt: new Date().toISOString(),
+    };
+    await managedSessionUpdate(updated);
+    await loadHistory(ws.id);
+    if (shouldRestart) {
+      onResume(ws.id, updated);
+    }
   };
 
   return (
@@ -129,8 +164,23 @@ export function SessionHistoryList({
           pos={menu}
           onClose={() => setMenu(null)}
           items={[
-            { label: "重命名", onClick: () => startRename(menu.entry) },
-            { label: "删除", danger: true, onClick: () => {
+            {
+              id: "current-provider",
+              label: `当前供应商：${resolveConversationProvider(menu.entry, ws, providers)?.name ?? "未配置"}`,
+              onClick: () => undefined,
+            },
+            {
+              id: "inherit-provider",
+              label: "跟随项目默认",
+              onClick: () => void changeProvider(menu.entry),
+            },
+            ...providers.map((provider) => ({
+              id: `provider-${provider.id}`,
+              label: `切换到 ${provider.name}`,
+              onClick: () => void changeProvider(menu.entry, provider.id),
+            })),
+            { id: "rename", label: "重命名", onClick: () => startRename(menu.entry) },
+            { id: "delete", label: "删除", danger: true, onClick: () => {
               void managedSessionDelete(menu.entry.id).then(() => loadHistory(ws.id));
             }},
           ]}

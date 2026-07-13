@@ -174,3 +174,111 @@
   opacity: 0.5;
   cursor: not-allowed;
 }
+.dialog-link-btn {
+  margin-top: 7px;
+  padding: 0;
+  color: var(--fg-dim);
+  background: transparent;
+  border: 0;
+  font-size: 12px;
+  text-decoration: underline;
+}
+.dialog-link-btn:hover {
+  color: var(--fg);
+}
+
+.provider-manager {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.provider-list {
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  overflow: hidden;
+}
+.provider-empty {
+  padding: 14px;
+  color: var(--fg-faint);
+  text-align: center;
+}
+.provider-row {
+  display: grid;
+  grid-template-columns: 58px minmax(90px, 1fr) minmax(100px, 1.4fr) 28px 28px;
+  align-items: center;
+  gap: 8px;
+  min-height: 38px;
+  padding: 4px 6px 4px 10px;
+  border-bottom: 1px solid var(--border);
+}
+.provider-row:last-child {
+  border-bottom: 0;
+}
+.provider-driver {
+  color: var(--fg-faint);
+  font-size: 11px;
+}
+.provider-name,
+.provider-model {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.provider-model {
+  color: var(--fg-faint);
+  font-size: 12px;
+}
+.provider-icon-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  color: var(--fg-dim);
+  background: transparent;
+  border: 0;
+  border-radius: var(--radius-sm);
+}
+.provider-icon-btn:hover {
+  color: var(--fg);
+  background: var(--hover);
+}
+.provider-delete-btn:hover {
+  color: var(--danger);
+}
+.provider-add-btn {
+  align-self: flex-start;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.provider-editor {
+  padding: 12px;
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+}
+.provider-editor-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 120px;
+  gap: 10px;
+}
+.provider-editor-grid .dialog-label {
+  margin-bottom: 0;
+}
+.provider-editor-grid .dialog-input {
+  margin-top: 5px;
+}
+.provider-editor-wide {
+  grid-column: 1 / -1;
+}
+.provider-editor-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 12px;
+}

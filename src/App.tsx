@@ -26,6 +26,15 @@ import { useUiStore } from "./store/uiStore";
 import { ptySpawn, appQuit, managedSessionCreate, managedSessionUpdate, aiSessionDetect } from "./api/commands";
 import { onSessionState, onSessionExit, onQuitRequest } from "./api/events";
 import type { LeafNode, ManagedSession, SpawnRequest } from "./api/types";
+import {
+  resolveProjectProvider,
+  resolveTerminalResumeSelection,
+} from "./lib/providers";
+import { nativeConversationTabId } from "./lib/nativeConversation";
+import {
+  workspaceActivationTarget,
+  workspaceIdForTab,
+} from "./lib/workItems";
 
 const INIT_COLS = 80;
 const INIT_ROWS = 24;
@@ -34,7 +43,10 @@ const INIT_ROWS = 24;
  * "待命名"会话注册表：spawn 后登记 ptySessionId→{workspaceId, kind}，
  * 等 TerminalPane 检测到用户首次按 Enter 时，以输入行作为名称创建 ManagedSession。
  */
-export const pendingSessions = new Map<string, { workspaceId: string; kind: string }>();
+export const pendingSessions = new Map<
+  string,
+  { workspaceId: string; kind: string; providerId?: string }
+>();
 const resumingIds = new Set<string>();
 
 function scheduleAiDetect(
@@ -125,13 +137,16 @@ export default function App() {
   const findLeafForWorkspace = useCallback((wsId: string): string | null => {
     const { tree, activePaneId } = useLayoutStore.getState();
     const sessions = useSessionStore.getState().sessions;
+    const conversations = useWorkspaceStore.getState().historyCache;
     const leaves = preorderLeaves(tree);
     const match = (l: LeafNode) =>
       !l.locked &&
-      l.sessionIds.some((sid) => sessions[sid]?.workspaceId === wsId) &&
+      l.sessionIds.some(
+        (sid) => workspaceIdForTab(sid, sessions, conversations) === wsId,
+      ) &&
       !l.sessionIds.some((sid) => {
-        const w = sessions[sid]?.workspaceId;
-        return w != null && w !== wsId;
+        const tabWorkspaceId = workspaceIdForTab(sid, sessions, conversations);
+        return tabWorkspaceId != null && tabWorkspaceId !== wsId;
       });
     const active = leaves.find((l) => l.id === activePaneId);
     if (active && match(active)) return active.id;
@@ -179,6 +194,24 @@ export default function App() {
     ls.openSessionInLeaf(leafId, sessionId);
   }, [pickLeafFor]);
 
+  const openNativeConversation = useCallback(
+    (conversation: ManagedSession): void => {
+      const tabId = nativeConversationTabId(conversation.id);
+      const layout = useLayoutStore.getState();
+      const existing = layout.findLeafBySession(tabId);
+      if (existing) {
+        layout.setActive(existing);
+        layout.activateTab(existing, tabId);
+        return;
+      }
+      const leafId = pickLeafFor(conversation.workspaceId);
+      if (!leafId) return;
+      layout.setActive(leafId);
+      layout.openSessionInLeaf(leafId, tabId);
+    },
+    [pickLeafFor],
+  );
+
   /** spawn 后绑定到指定 leaf 的 Tab */
   const spawnInto = useCallback(async (leafId: string, req: SpawnRequest, rebindEntry?: ManagedSession): Promise<void> => {
     const info = await ptySpawn(req);
@@ -201,42 +234,50 @@ export default function App() {
       pendingSessions.set(info.sessionId, {
         workspaceId: req.workspaceId ?? "",
         kind: info.kind,
+        providerId: req.providerId,
       });
     }
   }, []);
 
-  /** 点击工作空间：聚焦最近活跃会话或新建 */
-  const activateWorkspace = useCallback(
+  const createNativeConversation = useCallback(
     async (wsId: string): Promise<void> => {
-      const latest = latestForWorkspace(wsId);
-      if (latest) {
-        openSession(latest.sessionId);
-        return;
-      }
-      const leafId = pickLeafFor(wsId);
-      if (!leafId) return;
-      const ws = useWorkspaceStore.getState().workspaces.find((w) => w.id === wsId);
+      const ws = useWorkspaceStore.getState().workspaces.find((item) => item.id === wsId);
       if (!ws) return;
-      await spawnInto(leafId, { workspaceId: wsId, kind: ws.agent, cols: INIT_COLS, rows: INIT_ROWS });
+      const providers = useSettingsStore.getState().config?.providers ?? [];
+      const provider = resolveProjectProvider(ws, providers);
+      const now = new Date().toISOString();
+      const conversation: ManagedSession = {
+        id: crypto.randomUUID(),
+        workspaceId: wsId,
+        name: "新会话",
+        kind: provider?.driver ?? ws.agent,
+        mode: "native",
+        messages: [],
+        createdAt: now,
+        updatedAt: now,
+      };
+      await managedSessionCreate(conversation);
+      await useWorkspaceStore.getState().loadHistory(wsId);
+      openNativeConversation(conversation);
     },
-    [openSession, pickLeafFor, spawnInto],
+    [openNativeConversation],
   );
 
   /** 「+ 新会话」 */
   const newSession = useCallback(
     async (wsId: string): Promise<void> => {
-      const leafId = pickLeafFor(wsId);
-      if (!leafId) return;
-      const ws = useWorkspaceStore.getState().workspaces.find((w) => w.id === wsId);
-      if (!ws) return;
-      await spawnInto(leafId, { workspaceId: wsId, kind: ws.agent, cols: INIT_COLS, rows: INIT_ROWS });
+      await createNativeConversation(wsId);
     },
-    [pickLeafFor, spawnInto],
+    [createNativeConversation],
   );
 
   /** 点击侧边栏已有会话：PTY 活着则聚焦，否则 resume */
   const resumeSession = useCallback(
     async (wsId: string, entry: ManagedSession): Promise<void> => {
+      if (entry.mode === "native") {
+        openNativeConversation(entry);
+        return;
+      }
       if (entry.ptySessionId) {
         const live = useSessionStore.getState().sessions[entry.ptySessionId];
         if (live && live.state !== "dead") {
@@ -255,18 +296,50 @@ export default function App() {
         if (!leafId) return;
         const ws = useWorkspaceStore.getState().workspaces.find((w) => w.id === wsId);
         if (!ws) return;
+        const providers = useSettingsStore.getState().config?.providers ?? [];
+        const selection = resolveTerminalResumeSelection(entry, ws, providers);
         await spawnInto(leafId, {
           workspaceId: wsId,
-          kind: entry.kind,
-          resumeSessionId: entry.aiSessionId,
+          kind: selection.kind,
+          providerId: selection.providerId,
+          resumeSessionId: selection.resumeSessionId,
           cols: INIT_COLS,
           rows: INIT_ROWS,
-        }, entry);
+        }, {
+          ...entry,
+          kind: selection.kind,
+          aiSessionId: selection.resumeSessionId,
+        });
       } finally {
         resumingIds.delete(entry.id);
       }
     },
-    [openSession, pickLeafFor, spawnInto],
+    [openNativeConversation, openSession, pickLeafFor, spawnInto],
+  );
+
+  /** 点击项目：优先打开最近自管会话，其次活跃终端，否则新建原生会话 */
+  const activateWorkspace = useCallback(
+    async (wsId: string): Promise<void> => {
+      let managedSessions = useWorkspaceStore.getState().historyCache[wsId];
+      if (!managedSessions) {
+        await useWorkspaceStore.getState().loadHistory(wsId);
+        managedSessions = useWorkspaceStore.getState().historyCache[wsId];
+      }
+      const target = workspaceActivationTarget(
+        managedSessions,
+        latestForWorkspace(wsId),
+      );
+      if (target.kind === "managed") {
+        await resumeSession(wsId, target.session);
+        return;
+      }
+      if (target.kind === "terminal") {
+        openSession(target.sessionId);
+        return;
+      }
+      await createNativeConversation(wsId);
+    },
+    [createNativeConversation, openSession, resumeSession],
   );
 
   /** 新开纯 Shell */
@@ -283,15 +356,18 @@ export default function App() {
   const quickShell = useCallback((): void => {
     const { activePaneId, tree } = useLayoutStore.getState();
     const workspaces = useWorkspaceStore.getState().workspaces;
-    if (workspaces.length === 0) { showToast("请先创建工作空间"); return; }
+    if (workspaces.length === 0) { showToast("请先创建项目"); return; }
     let wsId: string | undefined;
     if (activePaneId && tree) {
       const leaves = preorderLeaves(tree);
       const active = leaves.find((l) => l.id === activePaneId);
       const sid = active?.activeSessionId;
       if (sid) {
-        const s = useSessionStore.getState().sessions[sid];
-        if (s?.workspaceId) wsId = s.workspaceId;
+        wsId = workspaceIdForTab(
+          sid,
+          useSessionStore.getState().sessions,
+          useWorkspaceStore.getState().historyCache,
+        ) ?? undefined;
       }
     }
     if (!wsId) wsId = workspaces[0].id;
@@ -319,6 +395,7 @@ export default function App() {
         workspaceId: pending.workspaceId,
         name: name || "新会话",
         kind: pending.kind as ManagedSession["kind"],
+        providerId: pending.providerId,
         ptySessionId: sessionId,
         createdAt: now,
         updatedAt: now,

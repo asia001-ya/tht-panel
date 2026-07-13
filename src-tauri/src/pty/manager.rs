@@ -70,8 +70,7 @@ impl PtyManager {
         thread::spawn(move || loop {
             thread::sleep(Duration::from_secs(1));
             // 收集当前会话句柄快照，避免持锁做 emit。
-            let arcs: Vec<Arc<Mutex<PtySession>>> =
-                sessions.lock().values().cloned().collect();
+            let arcs: Vec<Arc<Mutex<PtySession>>> = sessions.lock().values().cloned().collect();
             for arc in arcs {
                 let mut payload: Option<SessionStatePayload> = None;
                 {
@@ -317,11 +316,7 @@ impl PtyManager {
     /// attach：原子发送环形缓冲快照并设定 sink（抢占替换旧 sink）。
     /// Channel 有序 ⇒ 后续 Data 必排在 Snapshot 之后，无需序号机制（计划 8.3）。
     /// 参数：session_id——会话 id；channel——输出通道；返回：() 或 AppError。
-    pub fn attach(
-        &self,
-        session_id: &str,
-        channel: Channel<PtyOutputMsg>,
-    ) -> Result<(), AppError> {
+    pub fn attach(&self, session_id: &str, channel: Channel<PtyOutputMsg>) -> Result<(), AppError> {
         let arc = self.get(session_id)?;
         let mut s = arc.lock();
         // 快照用 lossy 转字符串（环形起点半字符容忍一个替换符）。
@@ -347,8 +342,7 @@ impl PtyManager {
     /// 杀死全部会话进程（应用退出路径，风险 10：防残留 powershell/node）。
     /// 参数：无；返回：无。
     pub fn kill_all(&self) {
-        let arcs: Vec<Arc<Mutex<PtySession>>> =
-            self.sessions.lock().values().cloned().collect();
+        let arcs: Vec<Arc<Mutex<PtySession>>> = self.sessions.lock().values().cloned().collect();
         for arc in arcs {
             let _ = arc.lock().killer.kill();
         }

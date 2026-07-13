@@ -49,12 +49,12 @@ impl BelScanner {
                     _ => {}
                 },
                 VtState::Escape => match b {
-                    b']' => self.state = VtState::Osc, // OSC
+                    b']' => self.state = VtState::Osc,                      // OSC
                     b'P' | b'X' | b'^' | b'_' => self.state = VtState::Dcs, // DCS/SOS/PM/APC
                     _ => self.state = VtState::Ground, // 其它转义视为短序列，回到 Ground
                 },
                 VtState::Osc => match b {
-                    0x07 => self.state = VtState::Ground, // BEL 终止 OSC（非响铃）
+                    0x07 => self.state = VtState::Ground,  // BEL 终止 OSC（非响铃）
                     0x1b => self.state = VtState::StMaybe, // 疑似 ST
                     _ => {}
                 },
