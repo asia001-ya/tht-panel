@@ -252,12 +252,53 @@ function planTabRestore(
   const managedByRef = savedRef?.managedSessionId
     ? managedSessions.find((session) => session.id === savedRef.managedSessionId)
     : undefined;
-  const managedByOldPty = managedSessions.find(
-    (session) => session.ptySessionId === oldTabId,
-  );
+  const managedByOldPty = savedRef
+    ? undefined
+    : managedSessions.find((session) => session.ptySessionId === oldTabId);
   const oldRuntime = runtimeSessions[oldTabId];
 
   if (oldRuntime && oldRuntime.state !== "dead") {
+    if (savedRef) {
+      if (
+        savedRef.mode !== "terminal"
+        || oldRuntime.workspaceId !== savedRef.workspaceId
+        || oldRuntime.kind !== savedRef.kind
+      ) {
+        return restoreError(leafId, oldTabId, "存活 PTY 与保存引用不一致");
+      }
+
+      if (savedRef.managedSessionId) {
+        if (
+          !managedByRef
+          || managedByRef.workspaceId !== savedRef.workspaceId
+          || managedByRef.kind !== savedRef.kind
+        ) {
+          return restoreError(leafId, oldTabId, "自管会话身份与保存引用不一致");
+        }
+
+        if (managedByRef.ptySessionId !== oldTabId) {
+          const currentRuntime = managedByRef.ptySessionId
+            ? runtimeSessions[managedByRef.ptySessionId]
+            : undefined;
+          if (
+            currentRuntime
+            && currentRuntime.state !== "dead"
+            && currentRuntime.workspaceId === savedRef.workspaceId
+            && currentRuntime.kind === savedRef.kind
+          ) {
+            return {
+              kind: "keep",
+              leafId,
+              oldTabId,
+              sessionId: currentRuntime.sessionId,
+              managedSessionId: managedByRef.id,
+            };
+          }
+          return restoreError(leafId, oldTabId, "自管会话绑定与存活 PTY 不一致");
+        }
+      }
+    }
+
     const managedSessionId = savedRef?.managedSessionId ?? managedByOldPty?.id;
     return {
       kind: "keep",
@@ -274,7 +315,7 @@ function planTabRestore(
   }
 
   const ref = { ...(savedRef ?? legacy?.ref) } as SavedSessionRef;
-  const managed = savedRef?.managedSessionId
+  const managed = savedRef
     ? managedByRef
     : legacy?.managed ?? managedByOldPty;
 
@@ -327,6 +368,21 @@ function planTabRestore(
 }
 
 /**
+ * 读取正常恢复动作占用的自管会话 ID。
+ * @param action 单个 Tab 的恢复动作。
+ * @returns 动作关联的自管会话 ID；错误或无关联时返回 undefined。
+ */
+function managedSessionIdForAction(
+  action: RestoreAction,
+): string | undefined {
+  if (action.kind === "error") return undefined;
+  if (action.kind === "spawn") {
+    return action.ref.managedSessionId ?? action.managed?.id;
+  }
+  return action.managedSessionId;
+}
+
+/**
  * 按 Leaf 先序和 Tab 顺序生成保存工作区恢复计划。
  * @param input 保存快照、运行态、自管会话和当前配置。
  * @returns 不执行任何副作用的有序恢复动作列表。
@@ -337,10 +393,28 @@ export function planWorkspaceRestore(input: RestorePlanInput): RestoreAction[] {
     ...context,
     sessionRefs: snapshot.sessionRefs,
   };
+  const actions: RestoreAction[] = [];
+  const claimedManagedSessionIds = new Set<string>();
 
-  return preorderLeaves(snapshot.tree).flatMap((leaf) =>
-    leaf.sessionIds.map((oldTabId) =>
-      planTabRestore(leaf.id, oldTabId, restoreContext),
-    ),
-  );
+  for (const leaf of preorderLeaves(snapshot.tree)) {
+    for (const oldTabId of leaf.sessionIds) {
+      const action = planTabRestore(leaf.id, oldTabId, restoreContext);
+      const managedSessionId = managedSessionIdForAction(action);
+      if (
+        managedSessionId
+        && claimedManagedSessionIds.has(managedSessionId)
+      ) {
+        actions.push(restoreError(
+          leaf.id,
+          oldTabId,
+          "快照重复引用同一自管会话",
+        ));
+        continue;
+      }
+      if (managedSessionId) claimedManagedSessionIds.add(managedSessionId);
+      actions.push(action);
+    }
+  }
+
+  return actions;
 }

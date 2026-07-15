@@ -219,6 +219,81 @@ describe("保存工作区恢复规划", () => {
     ]);
   });
 
+  it("旧 PTY 存活但工作空间与保存引用不一致时拒绝复用", () => {
+    const ref: SavedSessionRef = {
+      workspaceId: WORKSPACE_ID,
+      kind: "claude",
+      mode: "terminal",
+    };
+
+    expect(planWorkspaceRestore({
+      snapshot: snapshot(leafTree(["pty-cross-workspace"]), {
+        "pty-cross-workspace": ref,
+      }),
+      runtimeSessions: {
+        "pty-cross-workspace": runtimeSession("pty-cross-workspace", {
+          workspaceId: "workspace-2",
+          state: "running",
+        }),
+      },
+      managedSessions: [],
+      workspaces: [workspace, { ...workspace, id: "workspace-2" }],
+      providers,
+    })[0]).toMatchObject({
+      kind: "error",
+      oldTabId: "pty-cross-workspace",
+    });
+  });
+
+  it("旧 PTY 存活但类型与保存引用不一致时拒绝复用", () => {
+    const ref: SavedSessionRef = {
+      workspaceId: WORKSPACE_ID,
+      kind: "claude",
+      mode: "terminal",
+    };
+
+    expect(planWorkspaceRestore({
+      snapshot: snapshot(leafTree(["pty-cross-kind"]), {
+        "pty-cross-kind": ref,
+      }),
+      runtimeSessions: {
+        "pty-cross-kind": runtimeSession("pty-cross-kind", {
+          kind: "codex",
+          state: "running",
+        }),
+      },
+      managedSessions: [],
+      workspaces: [workspace],
+      providers,
+    })[0]).toMatchObject({
+      kind: "error",
+      oldTabId: "pty-cross-kind",
+    });
+  });
+
+  it("旧 PTY 被其他自管会话占用时拒绝串接显式 managed 身份", () => {
+    const ref: SavedSessionRef = {
+      managedSessionId: "managed-target",
+      workspaceId: WORKSPACE_ID,
+      kind: "claude",
+      mode: "terminal",
+    };
+
+    expect(planWorkspaceRestore({
+      snapshot: snapshot(leafTree(["pty-old"]), { "pty-old": ref }),
+      runtimeSessions: { "pty-old": runtimeSession("pty-old") },
+      managedSessions: [
+        managedSession("managed-target", { ptySessionId: "pty-other" }),
+        managedSession("managed-unrelated", { ptySessionId: "pty-old" }),
+      ],
+      workspaces: [workspace],
+      providers,
+    })[0]).toMatchObject({
+      kind: "error",
+      oldTabId: "pty-old",
+    });
+  });
+
   it("同一自管会话已有新 PTY 时复用新 ID 而不重复启动", () => {
     const ref: SavedSessionRef = {
       managedSessionId: "managed-1",
@@ -231,7 +306,7 @@ describe("保存工作区恢复规划", () => {
     expect(planWorkspaceRestore({
       snapshot: snapshot(leafTree(["pty-old"]), { "pty-old": ref }),
       runtimeSessions: {
-        "pty-old": runtimeSession("pty-old", { state: "dead" }),
+        "pty-old": runtimeSession("pty-old", { state: "running" }),
         "pty-new": runtimeSession("pty-new", { state: "running" }),
       },
       managedSessions: [managed],
@@ -281,6 +356,35 @@ describe("保存工作区恢复规划", () => {
       },
     ]);
     expect(actions[0]?.kind === "spawn" && actions[0].ref).not.toBe(ref);
+  });
+
+  it("保存引用没有 managed ID 时不把占用旧 PTY 的其他会话附到 spawn", () => {
+    const ref: SavedSessionRef = {
+      workspaceId: WORKSPACE_ID,
+      kind: "claude",
+      mode: "terminal",
+    };
+    const unrelated = managedSession("managed-unrelated", {
+      ptySessionId: "pty-old",
+      aiSessionId: "ai-unrelated",
+    });
+
+    expect(planWorkspaceRestore({
+      snapshot: snapshot(leafTree(["pty-old"]), { "pty-old": ref }),
+      runtimeSessions: {
+        "pty-old": runtimeSession("pty-old", { state: "dead" }),
+      },
+      managedSessions: [unrelated],
+      workspaces: [workspace],
+      providers,
+    })).toEqual([
+      {
+        kind: "spawn",
+        leafId: "leaf-1",
+        oldTabId: "pty-old",
+        ref,
+      },
+    ]);
   });
 
   it("旧快照按原生 ID 或旧 PTY 绑定回退，无法识别时返回固定错误", () => {
@@ -512,6 +616,85 @@ describe("保存工作区恢复规划", () => {
       ["top", "top-1"],
       ["bottom", "bottom-1"],
       ["bottom", "bottom-2"],
+    ]);
+  });
+
+  it("重复引用同一 managed ID 时只保留首个正常动作并按顺序报错", () => {
+    const sessionIds = [
+      "spawn-first",
+      "spawn-duplicate",
+      "keep-first",
+      "keep-duplicate",
+      "native-first",
+      "native-duplicate",
+    ];
+    const refs: Record<string, SavedSessionRef> = {
+      "spawn-first": {
+        managedSessionId: "managed-spawn",
+        workspaceId: WORKSPACE_ID,
+        kind: "claude",
+        mode: "terminal",
+      },
+      "spawn-duplicate": {
+        managedSessionId: "managed-spawn",
+        workspaceId: WORKSPACE_ID,
+        kind: "claude",
+        mode: "terminal",
+      },
+      "keep-first": {
+        managedSessionId: "managed-keep",
+        workspaceId: WORKSPACE_ID,
+        kind: "claude",
+        mode: "terminal",
+      },
+      "keep-duplicate": {
+        managedSessionId: "managed-keep",
+        workspaceId: WORKSPACE_ID,
+        kind: "claude",
+        mode: "terminal",
+      },
+      "native-first": {
+        managedSessionId: "managed-native",
+        workspaceId: WORKSPACE_ID,
+        kind: "claude",
+        mode: "native",
+      },
+      "native-duplicate": {
+        managedSessionId: "managed-native",
+        workspaceId: WORKSPACE_ID,
+        kind: "claude",
+        mode: "native",
+      },
+    };
+    const actions = planWorkspaceRestore({
+      snapshot: snapshot(leafTree(sessionIds), refs),
+      runtimeSessions: {
+        "pty-current": runtimeSession("pty-current", { state: "running" }),
+      },
+      managedSessions: [
+        managedSession("managed-spawn", { aiSessionId: "ai-spawn" }),
+        managedSession("managed-keep", { ptySessionId: "pty-current" }),
+        managedSession("managed-native", { mode: "native" }),
+      ],
+      workspaces: [workspace],
+      providers,
+    });
+
+    expect(actions.map((action) => [action.oldTabId, action.kind])).toEqual([
+      ["spawn-first", "spawn"],
+      ["spawn-duplicate", "error"],
+      ["keep-first", "keep"],
+      ["keep-duplicate", "error"],
+      ["native-first", "native"],
+      ["native-duplicate", "error"],
+    ]);
+    expect(
+      actions.filter((action) => action.kind === "error")
+        .map((action) => action.message),
+    ).toEqual([
+      "快照重复引用同一自管会话",
+      "快照重复引用同一自管会话",
+      "快照重复引用同一自管会话",
     ]);
   });
 
