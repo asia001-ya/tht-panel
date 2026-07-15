@@ -68,6 +68,42 @@ describe("taskStore", () => {
     expect(useTaskStore.getState().drawerPaneId).toBeNull();
   });
 
+  it("忽略晚于当前工作区请求完成的旧加载响应", async () => {
+    let resolveOld: ((tasks: PaneTask[]) => void) | undefined;
+    let resolveCurrent: ((tasks: PaneTask[]) => void) | undefined;
+    vi.mocked(taskList)
+      .mockImplementationOnce(() => new Promise((resolve) => {
+        resolveOld = resolve;
+      }))
+      .mockImplementationOnce(() => new Promise((resolve) => {
+        resolveCurrent = resolve;
+      }));
+
+    const oldLoad = useTaskStore.getState().load("saved-old");
+    const currentLoad = useTaskStore.getState().load("saved-current");
+    resolveCurrent?.([task("task-current", "queued")]);
+    await currentLoad;
+    resolveOld?.([task("task-old", "queued")]);
+    await oldLoad;
+
+    expect(useTaskStore.getState().tasks).toEqual([
+      task("task-current", "queued"),
+    ]);
+    expect(useTaskStore.getState().loading).toBe(false);
+  });
+
+  it("当前工作区加载失败时保留原任务数组并记录错误", async () => {
+    const existing = task("task-old", "queued");
+    useTaskStore.setState({ tasks: [existing] });
+    vi.mocked(taskList).mockRejectedValue(new Error("加载失败"));
+
+    await useTaskStore.getState().load("saved-current");
+
+    expect(useTaskStore.getState().tasks).toEqual([existing]);
+    expect(useTaskStore.getState().loading).toBe(false);
+    expect(useTaskStore.getState().error).toBe("加载失败");
+  });
+
   it("七个动作均使用后端返回对象覆盖对应任务", async () => {
     const queued = task("task-1", "queued");
     const dispatched = task("task-1", "dispatched");
@@ -116,5 +152,72 @@ describe("taskStore", () => {
     expect(result).toBeNull();
     expect(useTaskStore.getState().tasks).toEqual([existing]);
     expect(useTaskStore.getState().error).toBe("会话不可用");
+  });
+
+  it("关闭并打开其他抽屉后忽略旧动作晚到的错误", async () => {
+    let rejectDispatch: ((reason?: unknown) => void) | undefined;
+    vi.mocked(taskDispatch).mockImplementation(() => new Promise((_, reject) => {
+      rejectDispatch = reject;
+    }));
+    const existing = task("task-1", "queued");
+    useTaskStore.setState({ tasks: [existing] });
+    useTaskStore.getState().openDrawer("pane-server");
+    const pendingDispatch = useTaskStore
+      .getState()
+      .dispatch("task-1", "pane-server", "pty-server");
+
+    useTaskStore.getState().closeDrawer();
+    useTaskStore.getState().openDrawer("pane-web");
+    rejectDispatch?.(new Error("旧抽屉失败"));
+    await pendingDispatch;
+
+    expect(useTaskStore.getState().drawerPaneId).toBe("pane-web");
+    expect(useTaskStore.getState().tasks).toEqual([existing]);
+    expect(useTaskStore.getState().error).toBeNull();
+  });
+
+  it("加载新工作区后忽略旧动作晚到的错误", async () => {
+    let rejectDispatch: ((reason?: unknown) => void) | undefined;
+    vi.mocked(taskDispatch).mockImplementation(() => new Promise((_, reject) => {
+      rejectDispatch = reject;
+    }));
+    const currentTask = {
+      ...task("task-current", "queued"),
+      savedWorkspaceId: "saved-current",
+    };
+    vi.mocked(taskList).mockResolvedValue([currentTask]);
+    useTaskStore.setState({ tasks: [task("task-old", "queued")] });
+    const pendingDispatch = useTaskStore
+      .getState()
+      .dispatch("task-old", "pane-server", "pty-server");
+
+    await useTaskStore.getState().load("saved-current");
+    rejectDispatch?.(new Error("旧工作区失败"));
+    await pendingDispatch;
+
+    expect(useTaskStore.getState().tasks).toEqual([currentTask]);
+    expect(useTaskStore.getState().error).toBeNull();
+  });
+
+  it("抽屉变化后旧动作成功仍使用后端任务 upsert", async () => {
+    let resolveDispatch: ((value: PaneTask) => void) | undefined;
+    vi.mocked(taskDispatch).mockImplementation(() => new Promise((resolve) => {
+      resolveDispatch = resolve;
+    }));
+    const existing = task("task-1", "queued");
+    const dispatched = task("task-1", "dispatched");
+    useTaskStore.setState({ tasks: [existing] });
+    useTaskStore.getState().openDrawer("pane-server");
+    const pendingDispatch = useTaskStore
+      .getState()
+      .dispatch("task-1", "pane-server", "pty-server");
+
+    useTaskStore.getState().closeDrawer();
+    useTaskStore.getState().openDrawer("pane-web");
+    resolveDispatch?.(dispatched);
+    await pendingDispatch;
+
+    expect(useTaskStore.getState().tasks).toEqual([dispatched]);
+    expect(useTaskStore.getState().error).toBeNull();
   });
 });

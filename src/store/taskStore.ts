@@ -77,22 +77,43 @@ function taskErrorMessage(error: unknown): string {
   return String(error);
 }
 
+/**
+ * 筛选属于当前保存工作区或未保存布局的任务。
+ * @param tasks 后端任务数组。
+ * @param savedWorkspaceId 当前保存工作区标识；null 表示未保存布局。
+ * @returns 当前工作区范围内的任务。
+ */
+export function tasksForSavedWorkspace(
+  tasks: PaneTask[],
+  savedWorkspaceId: string | null,
+): PaneTask[] {
+  return tasks.filter(
+    (task) => (task.savedWorkspaceId ?? null) === savedWorkspaceId,
+  );
+}
+
 export const useTaskStore = create<TaskState>((set) => {
+  let loadGeneration = 0;
+  let errorGeneration = 0;
+
   /**
-   * 执行一次后端状态迁移，成功时 upsert，失败时保留原任务。
+   * 执行一次后端状态迁移；成功时 upsert，失败时保留原任务并仅在当前范围显示错误。
    * @param command 返回后端任务的异步操作。
    * @returns 后端任务；失败时返回 null。
    */
   async function updateFromCommand(
     command: () => Promise<PaneTask>,
   ): Promise<PaneTask | null> {
+    const generation = errorGeneration;
     set({ error: null });
     try {
       const task = await command();
       set((state) => ({ tasks: upsertTask(state.tasks, task) }));
       return task;
     } catch (error) {
-      set({ error: taskErrorMessage(error) });
+      if (generation === errorGeneration) {
+        set({ error: taskErrorMessage(error) });
+      }
       return null;
     }
   }
@@ -103,27 +124,87 @@ export const useTaskStore = create<TaskState>((set) => {
     error: null,
     drawerPaneId: null,
 
+    /**
+     * 加载指定保存工作区或未保存布局的任务。
+     * @param savedWorkspaceId 保存工作区标识；省略表示未保存布局。
+     * @returns 加载完成时解决的 Promise。
+     */
     load: async (savedWorkspaceId) => {
+      const generation = ++loadGeneration;
+      errorGeneration += 1;
       set({ loading: true, error: null });
       try {
         const tasks = await taskList(savedWorkspaceId);
+        if (generation !== loadGeneration) return;
         set({ tasks, loading: false });
       } catch (error) {
+        if (generation !== loadGeneration) return;
         set({ loading: false, error: taskErrorMessage(error) });
       }
     },
 
+    /**
+     * 创建 queued 协作任务。
+     * @param request 受控任务创建输入。
+     * @returns 后端任务；失败时返回 null。
+     */
     create: (request) => updateFromCommand(() => taskCreate(request)),
+    /**
+     * 把任务派发到目标 Pane 的冻结会话。
+     * @param taskId 任务标识。
+     * @param targetPaneId 目标 Pane 标识。
+     * @param sessionId 冻结的目标 PTY 会话标识。
+     * @returns dispatched 任务；失败时返回 null。
+     */
     dispatch: (taskId, targetPaneId, sessionId) =>
       updateFromCommand(() => taskDispatch(taskId, targetPaneId, sessionId)),
+    /**
+     * 上报任务完成或受阻结果。
+     * @param taskId 任务标识。
+     * @param outcome 完成或受阻结果。
+     * @param report 上报正文。
+     * @returns reported 任务；失败时返回 null。
+     */
     report: (taskId, outcome, report) =>
       updateFromCommand(() => taskReport(taskId, outcome, report)),
+    /**
+     * 把上报结果转交到来源 Pane 的冻结会话。
+     * @param taskId 任务标识。
+     * @param sourcePaneId 来源 Pane 标识。
+     * @param sessionId 冻结的来源 PTY 会话标识。
+     * @returns forwarded 任务；失败时返回 null。
+     */
     forward: (taskId, sourcePaneId, sessionId) =>
       updateFromCommand(() => taskForward(taskId, sourcePaneId, sessionId)),
+    /**
+     * 关闭已转交任务。
+     * @param taskId 任务标识。
+     * @returns closed 任务；失败时返回 null。
+     */
     close: (taskId) => updateFromCommand(() => taskClose(taskId)),
+    /**
+     * 取消尚未派发的任务。
+     * @param taskId 任务标识。
+     * @returns cancelled 任务；失败时返回 null。
+     */
     cancel: (taskId) => updateFromCommand(() => taskCancel(taskId)),
-    openDrawer: (paneId) => set({ drawerPaneId: paneId, error: null }),
-    closeDrawer: () => set({ drawerPaneId: null, error: null }),
+    /**
+     * 打开指定 Pane 的任务抽屉。
+     * @param paneId Pane 标识。
+     * @returns 无返回值。
+     */
+    openDrawer: (paneId) => {
+      errorGeneration += 1;
+      set({ drawerPaneId: paneId, error: null });
+    },
+    /**
+     * 关闭任务抽屉并清除当前错误。
+     * @returns 无返回值。
+     */
+    closeDrawer: () => {
+      errorGeneration += 1;
+      set({ drawerPaneId: null, error: null });
+    },
   };
 });
 

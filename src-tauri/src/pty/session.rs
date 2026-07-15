@@ -11,7 +11,7 @@ use portable_pty::{ChildKiller, MasterPty};
 use tauri::ipc::Channel;
 
 use crate::config::model::{PtyOutputMsg, PtySessionInfo};
-use crate::pty::activity::BelScanner;
+use crate::pty::activity::{AgentForeground, BelScanner};
 use crate::pty::ring::RingBuffer;
 
 /// 一个存活（或已退出待回看）的 PTY 会话。
@@ -30,6 +30,8 @@ pub struct PtySession {
     pub sink: Option<Channel<PtyOutputMsg>>,
     /// BEL 感知扫描器（跨帧保持状态）
     pub scanner: BelScanner,
+    /// AI 命令是否仍处于 PowerShell 前台
+    pub agent_foreground: AgentForeground,
     /// 最近一次收到输出的时刻（tick 线程据此做 running→idle 降级）
     pub last_output: Instant,
     /// 最近一次因 waiting 发系统通知的时刻（30s 防抖）

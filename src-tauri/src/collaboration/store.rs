@@ -164,6 +164,24 @@ impl TaskStore {
     where
         F: FnOnce(&mut PaneTask),
     {
+        self.transition_with(id, expected, next_status, |task| {
+            update(task);
+            Ok(())
+        })
+    }
+
+    /// 持有任务锁执行一次受控操作并提交状态迁移，防止同一任务重复产生外部副作用。
+    /// 参数：id——任务标识；expected——当前状态；next_status——目标状态；operation——有限操作，禁止回调当前 TaskStore；返回：更新任务。
+    pub(crate) fn transition_with<F>(
+        &self,
+        id: &str,
+        expected: TaskStatus,
+        next_status: TaskStatus,
+        operation: F,
+    ) -> Result<PaneTask, AppError>
+    where
+        F: FnOnce(&mut PaneTask) -> Result<(), AppError>,
+    {
         let mut current = self.tasks.lock();
         let mut next = current.clone();
         let task = next
@@ -178,7 +196,7 @@ impl TaskStore {
             )));
         }
 
-        update(task);
+        operation(task)?;
         task.status = next_status;
         task.updated_at = now_rfc3339();
         let updated = task.clone();

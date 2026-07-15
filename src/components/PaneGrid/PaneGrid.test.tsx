@@ -472,6 +472,30 @@ describe("PaneGrid 任务入口", () => {
     fireEvent.click(taskButton as HTMLButtonElement);
     expect(useTaskStore.getState().drawerPaneId).toBe("leaf-left");
   });
+
+  it("不统计 Pane ID 相同但属于其他保存工作区的任务", () => {
+    useLayoutStore.setState({ activeSavedWorkspaceId: "saved-current" });
+    useTaskStore.setState({
+      tasks: [{
+        id: "task-old",
+        savedWorkspaceId: "saved-old",
+        sourcePaneId: "leaf-right",
+        targetPaneId: "leaf-left",
+        sourcePaneName: "server",
+        targetPaneName: "web",
+        title: "旧工作区任务",
+        request: "不应显示",
+        status: "queued",
+        createdAt: "2026-07-15T00:00:00Z",
+        updatedAt: "2026-07-15T00:00:00Z",
+      }],
+    });
+
+    renderPaneGrid();
+
+    const leftLeaf = document.querySelectorAll<HTMLElement>(".pane-leaf")[0];
+    expect(leftLeaf.querySelector(".pane-task-badge")).toBeNull();
+  });
 });
 
 describe("PaneGrid 关闭委托", () => {

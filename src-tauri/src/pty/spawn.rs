@@ -18,6 +18,7 @@ use base64::Engine;
 
 use crate::config::model::{AgentConfig, GlobalConfig, ProviderProfile, SpawnRequest, Workspace};
 use crate::error::AppError;
+use crate::pty::activity::AGENT_EXIT_MARKER_TEXT;
 
 /// 已解析的启动描述：交给 PtyManager::spawn 直接用来 openpty + spawn_command。
 #[derive(Debug, Clone)]
@@ -203,6 +204,9 @@ pub fn build_resolved_launch(
         script.push(' ');
         script.push_str(&quote_arg(a));
     }
+    script.push_str("; [Console]::Out.Write(([char]27).ToString() + ']777;");
+    script.push_str(AGENT_EXIT_MARKER_TEXT);
+    script.push_str("' + [char]7)");
 
     let encoded = encode_powershell_command(&script);
     let args = vec![
@@ -458,6 +462,29 @@ mod tests {
             cols: 80,
             rows: 24,
         }
+    }
+
+    /// 验证 AI 返回后脚本输出前台退出标记，同时保留 PowerShell 会话。
+    /// 参数：无；返回：无，断言失败时由测试框架报告。
+    #[test]
+    fn agent_launch_signals_return_to_shell_after_command() {
+        let mut workspace = workspace();
+        workspace.default_provider_id = None;
+        let launch = build_resolved_launch(
+            &GlobalConfig::default(),
+            Some(&workspace),
+            &request("unused"),
+            Path::new("."),
+        )
+        .expect("AI 启动描述应生成");
+        let script = decode_script(&launch);
+        let command_index = script.find("& 'claude'").expect("脚本应启动 Claude");
+        let marker_index = script
+            .find("tht-panel-agent-exit")
+            .expect("AI 返回后应输出前台退出标记");
+
+        assert!(marker_index > command_index);
+        assert!(launch.args.iter().any(|argument| argument == "-NoExit"));
     }
 
     /// 验证严格模式可使用与请求类型一致的唯一合法命名供应商。

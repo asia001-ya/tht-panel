@@ -7,7 +7,11 @@ import { useState } from "react";
 import type { LeafNode, SessionState } from "../../api/types";
 import { useLayoutStore } from "../../store/layoutStore";
 import { useSessionStore } from "../../store/sessionStore";
-import { pendingTaskCount, useTaskStore } from "../../store/taskStore";
+import {
+  pendingTaskCount,
+  tasksForSavedWorkspace,
+  useTaskStore,
+} from "../../store/taskStore";
 import { useWorkspaceStore } from "../../store/workspaceStore";
 import { TerminalPane } from "../../terminal/TerminalPane";
 import { parseNativeConversationTabId } from "../../lib/nativeConversation";
@@ -146,12 +150,16 @@ export function PaneLeaf({
   onPaneDragEnd,
 }: PaneLeafProps): React.ReactElement {
   const activePaneId = useLayoutStore((s) => s.activePaneId);
+  const activeSavedWorkspaceId = useLayoutStore((s) => s.activeSavedWorkspaceId);
   const setActive = useLayoutStore((s) => s.setActive);
   const toggleLock = useLayoutStore((s) => s.toggleLock);
   const splitPane = useLayoutStore((s) => s.splitPane);
   const renamePane = useLayoutStore((s) => s.renamePane);
   const openTaskDrawer = useTaskStore((state) => state.openDrawer);
-  const taskCount = useTaskStore((state) => pendingTaskCount(state.tasks, leaf.id));
+  const taskCount = useTaskStore((state) => pendingTaskCount(
+    tasksForSavedWorkspace(state.tasks, activeSavedWorkspaceId),
+    leaf.id,
+  ));
   const [editing, setEditing] = useState(false);
   const [draftName, setDraftName] = useState("");
   const [nameError, setNameError] = useState<string | null>(null);

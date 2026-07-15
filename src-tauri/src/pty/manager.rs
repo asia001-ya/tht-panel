@@ -26,7 +26,7 @@ use crate::config::model::{
     EVT_SESSION_EXIT, EVT_SESSION_STATE,
 };
 use crate::error::AppError;
-use crate::pty::activity::BelScanner;
+use crate::pty::activity::{AgentForeground, BelScanner};
 use crate::pty::pump::run_pump;
 use crate::pty::ring::RingBuffer;
 use crate::pty::session::PtySession;
@@ -51,6 +51,14 @@ pub struct PtyManager {
     sessions: SessionMap,
     /// 是否在等待输入时发系统通知（跟随全局配置，由 config_set 更新）
     notify_on_waiting: Arc<AtomicBool>,
+}
+
+/// 任务提示写入失败阶段，用于区分写前拒绝与可能部分交付。
+pub(crate) enum TaskPromptWriteError {
+    /// 写入开始前的会话校验失败
+    Rejected(AppError),
+    /// 写入开始后结果不确定，禁止自动重试
+    DeliveryUnknown(AppError),
 }
 
 impl PtyManager {
@@ -170,6 +178,7 @@ impl PtyManager {
             ring: RingBuffer::new(scrollback_bytes),
             sink: None,
             scanner: BelScanner::new(),
+            agent_foreground: AgentForeground::new(&info.kind),
             last_output: Instant::now(),
             last_notify: None,
         };
@@ -180,12 +189,17 @@ impl PtyManager {
         let (tx, rx) = mpsc::channel::<Vec<u8>>();
         {
             let mut reader = reader;
+            let arc_reader = arc.clone();
             thread::spawn(move || {
                 let mut buf = [0u8; READ_BUF];
                 loop {
                     match reader.read(&mut buf) {
                         Ok(0) => break, // EOF：子进程退出且 slave 已释放
                         Ok(n) => {
+                            {
+                                let mut session = arc_reader.lock();
+                                observe_reader_chunk(&mut session.agent_foreground, &buf[..n]);
+                            }
                             if tx.send(buf[..n].to_vec()).is_err() {
                                 break; // pump 端已退出
                             }
@@ -217,7 +231,12 @@ impl PtyManager {
                 if let Some(arc) = sessions.lock().get(&sid).cloned() {
                     let (state_payload, exit_payload) = {
                         let mut s = arc.lock();
-                        s.info.state = SessionState::Dead;
+                        let PtySession {
+                            info,
+                            agent_foreground,
+                            ..
+                        } = &mut *s;
+                        deactivate_task_injection(info, agent_foreground);
                         if let Some(sink) = &s.sink {
                             let _ = sink.send(PtyOutputMsg::Exit { code });
                         }
@@ -249,11 +268,7 @@ impl PtyManager {
         let mut cleared: Option<SessionStatePayload> = None;
         {
             let mut s = arc.lock();
-            if let Some(w) = s.writer.as_mut() {
-                w.write_all(data.as_bytes())
-                    .map_err(|e| AppError::Pty(format!("写入失败: {e}")))?;
-                let _ = w.flush();
-            }
+            write_session(&mut s, data)?;
             // 用户输入 → 清除 waiting（计划 8.4）。
             if s.info.state == SessionState::Waiting {
                 s.info.state = SessionState::Running;
@@ -269,6 +284,31 @@ impl PtyManager {
             let _ = self.app.emit(EVT_SESSION_STATE, p);
         }
         Ok(())
+    }
+
+    /// 在同一会话锁内校验真实 AI 前台状态并写入任务提示。
+    /// 参数：session_id——会话标识；data——单行任务提示；返回：成功或带交付阶段的错误。
+    pub(crate) fn validate_and_write_task(
+        &self,
+        session_id: &str,
+        data: &str,
+    ) -> Result<(), TaskPromptWriteError> {
+        let session = self
+            .get(session_id)
+            .map_err(TaskPromptWriteError::Rejected)?;
+        let mut session = session.lock();
+        validate_task_prompt_session(
+            &session.info,
+            session_id,
+            session.agent_foreground.is_active(),
+        )
+        .map_err(TaskPromptWriteError::Rejected)?;
+        if session.writer.is_none() {
+            return Err(TaskPromptWriteError::Rejected(AppError::Pty(
+                "会话写入端不可用".to_string(),
+            )));
+        }
+        write_session(&mut session, data).map_err(TaskPromptWriteError::DeliveryUnknown)
     }
 
     /// 调整会话终端尺寸（cols/rows 钳制下限 2，风险 6）。
@@ -293,6 +333,12 @@ impl PtyManager {
         let arc = self.get(session_id)?;
         {
             let mut s = arc.lock();
+            let PtySession {
+                info,
+                agent_foreground,
+                ..
+            } = &mut *s;
+            deactivate_task_injection(info, agent_foreground);
             let _ = s.killer.kill();
         }
         self.sessions.lock().remove(session_id);
@@ -348,7 +394,14 @@ impl PtyManager {
     pub fn kill_all(&self) {
         let arcs: Vec<Arc<Mutex<PtySession>>> = self.sessions.lock().values().cloned().collect();
         for arc in arcs {
-            let _ = arc.lock().killer.kill();
+            let mut session = arc.lock();
+            let PtySession {
+                info,
+                agent_foreground,
+                ..
+            } = &mut *session;
+            deactivate_task_injection(info, agent_foreground);
+            let _ = session.killer.kill();
         }
         self.sessions.lock().clear();
     }
@@ -364,10 +417,74 @@ impl PtyManager {
     }
 }
 
+/// 使会话任务注入立即失效，供 kill、kill_all 与进程退出路径在持锁时调用。
+/// 参数：info——会话信息；agent_foreground——AI 前台状态；返回：无。
+fn deactivate_task_injection(info: &mut PtySessionInfo, agent_foreground: &mut AgentForeground) {
+    info.state = SessionState::Dead;
+    agent_foreground.deactivate();
+}
+
+/// 在 reader 转交原始输出前观察 AI 退出标记。
+/// 参数：agent_foreground——AI 前台状态；data——本次原始输出；返回：无。
+fn observe_reader_chunk(agent_foreground: &mut AgentForeground, data: &[u8]) {
+    agent_foreground.observe_output(data);
+}
+
 /// 当前时刻的 RFC3339（UTC）字符串。
 /// 参数：无；返回：时间戳字符串。
 fn now_iso() -> String {
     chrono::Utc::now().to_rfc3339()
+}
+
+/// 校验任务提示的会话标识、AI 类型、真实前台状态和可注入状态。
+/// 参数：info——会话快照；session_id——提交会话标识；agent_active——AI 是否仍在前台；返回：成功或 AppError。
+pub(crate) fn validate_task_prompt_session(
+    info: &PtySessionInfo,
+    session_id: &str,
+    agent_active: bool,
+) -> Result<(), AppError> {
+    if info.session_id != session_id {
+        return Err(AppError::Other("PTY 会话标识不匹配".to_string()));
+    }
+    if !matches!(info.kind.as_str(), "claude" | "codex") {
+        return Err(AppError::Other(
+            "仅 Claude/Codex 会话可接收任务".to_string(),
+        ));
+    }
+    if !agent_active {
+        return Err(AppError::Other(
+            "AI 已退出并返回 Shell，当前会话不可注入".to_string(),
+        ));
+    }
+    if matches!(info.state, SessionState::Waiting | SessionState::Dead) {
+        return Err(AppError::Other(format!(
+            "当前会话状态不可注入: {:?}",
+            info.state
+        )));
+    }
+    Ok(())
+}
+
+/// 向已加锁会话完整写入文本并刷新写入端。
+/// 参数：session——已加锁会话；data——输入文本；返回：成功或 AppError。
+fn write_session(session: &mut PtySession, data: &str) -> Result<(), AppError> {
+    let writer = session
+        .writer
+        .as_mut()
+        .ok_or_else(|| AppError::Pty("会话写入端不可用".to_string()))?;
+    write_all_and_flush(writer.as_mut(), data.as_bytes())
+}
+
+/// 完整写入全部字节并刷新写入端。
+/// 参数：writer——PTY 写入端；data——待写字节；返回：成功或 AppError。
+fn write_all_and_flush(writer: &mut dyn Write, data: &[u8]) -> Result<(), AppError> {
+    writer
+        .write_all(data)
+        .map_err(|error| AppError::Pty(format!("写入失败: {error}")))?;
+    writer
+        .flush()
+        .map_err(|error| AppError::Pty(format!("刷新失败: {error}")))?;
+    Ok(())
 }
 
 /// 根据解析后的启动描述构建 PTY 子进程命令并注入终端能力变量。
@@ -389,9 +506,152 @@ fn build_command(launch: &ResolvedLaunch) -> CommandBuilder {
 
 #[cfg(test)]
 mod tests {
-    use super::build_command;
+    use super::{
+        build_command, deactivate_task_injection, observe_reader_chunk,
+        validate_task_prompt_session, write_all_and_flush,
+    };
+    use crate::config::model::{PtySessionInfo, SessionState};
+    use crate::pty::activity::{AgentForeground, AGENT_EXIT_SEQUENCE};
     use crate::pty::spawn::ResolvedLaunch;
     use std::ffi::OsStr;
+    use std::io::{self, Write};
+    use std::sync::{Arc, Barrier};
+    use std::thread;
+
+    use parking_lot::Mutex;
+
+    /// 首次只写部分字节、后续写入失败的测试写入端。
+    struct PartialThenFailWriter {
+        delivered: Vec<u8>,
+        writes: usize,
+    }
+
+    impl PartialThenFailWriter {
+        /// 创建尚未写入任何字节的测试写入端。
+        /// 参数：无；返回：测试写入端。
+        fn new() -> Self {
+            Self {
+                delivered: Vec::new(),
+                writes: 0,
+            }
+        }
+    }
+
+    impl Write for PartialThenFailWriter {
+        /// 首次交付三个字节，后续返回模拟错误。
+        /// 参数：buffer——待写字节；返回：本次写入数量或 IO 错误。
+        fn write(&mut self, buffer: &[u8]) -> io::Result<usize> {
+            self.writes += 1;
+            if self.writes > 1 {
+                return Err(io::Error::new(io::ErrorKind::BrokenPipe, "模拟部分写失败"));
+            }
+            let written = buffer.len().min(3);
+            self.delivered.extend_from_slice(&buffer[..written]);
+            Ok(written)
+        }
+
+        /// 刷新测试写入端。
+        /// 参数：无；返回：成功。
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
+    /// 写入成功但刷新失败的测试写入端。
+    struct FlushFailWriter {
+        delivered: Vec<u8>,
+    }
+
+    impl Write for FlushFailWriter {
+        /// 完整记录本次写入字节。
+        /// 参数：buffer——待写字节；返回：全部字节数。
+        fn write(&mut self, buffer: &[u8]) -> io::Result<usize> {
+            self.delivered.extend_from_slice(buffer);
+            Ok(buffer.len())
+        }
+
+        /// 模拟刷新失败。
+        /// 参数：无；返回：IO 错误。
+        fn flush(&mut self) -> io::Result<()> {
+            Err(io::Error::new(io::ErrorKind::BrokenPipe, "模拟刷新失败"))
+        }
+    }
+
+    /// 验证完整写入失败前可能已经交付部分字节。
+    /// 参数：无；返回：无，断言失败时由测试框架报告。
+    #[test]
+    fn write_all_reports_error_after_partial_delivery() {
+        let mut writer = PartialThenFailWriter::new();
+
+        let error = write_all_and_flush(&mut writer, b"task-prompt")
+            .expect_err("部分交付后失败必须返回错误");
+
+        assert_eq!(writer.delivered, b"tas");
+        assert!(error.to_string().contains("写入失败"));
+    }
+
+    /// 验证字节写入成功后的刷新失败仍向调用方传播。
+    /// 参数：无；返回：无，断言失败时由测试框架报告。
+    #[test]
+    fn write_all_propagates_flush_failure() {
+        let mut writer = FlushFailWriter {
+            delivered: Vec::new(),
+        };
+
+        let error =
+            write_all_and_flush(&mut writer, b"task-prompt").expect_err("刷新失败必须向调用方传播");
+
+        assert_eq!(writer.delivered, b"task-prompt");
+        assert!(error.to_string().contains("刷新失败"));
+    }
+
+    /// 验证已提前取得 Arc 的注入者在 kill 失效会话后仍被拒绝。
+    /// 参数：无；返回：无，断言失败时由测试框架报告。
+    #[test]
+    fn precloned_session_rejects_injection_after_deactivation() {
+        let info = PtySessionInfo {
+            session_id: "pty-1".to_string(),
+            workspace_id: Some("project-1".to_string()),
+            kind: "codex".to_string(),
+            cwd: ".".to_string(),
+            title: "codex".to_string(),
+            resumed_from: None,
+            state: SessionState::Idle,
+            created_at: "2026-07-15T00:00:00Z".to_string(),
+        };
+        let session = Arc::new(Mutex::new((info, AgentForeground::new("codex"))));
+        let precloned = Arc::clone(&session);
+        let started = Arc::new(Barrier::new(2));
+        let waiter_started = Arc::clone(&started);
+        let mut session_guard = session.lock();
+        let waiter = thread::spawn(move || {
+            waiter_started.wait();
+            let session = precloned.lock();
+            validate_task_prompt_session(&session.0, "pty-1", session.1.is_active())
+        });
+        started.wait();
+        let (info, foreground) = &mut *session_guard;
+        deactivate_task_injection(info, foreground);
+        drop(session_guard);
+
+        assert!(waiter.join().expect("注入线程不应崩溃").is_err());
+    }
+
+    /// 验证 reader 分块观察退出标记后，在转交 pump 前已关闭前台状态。
+    /// 参数：无；返回：无，断言失败时由测试框架报告。
+    #[test]
+    fn reader_observes_split_exit_marker_before_forwarding() {
+        let mut foreground = AgentForeground::new("claude");
+        let split = AGENT_EXIT_SEQUENCE.len() / 2;
+        let mut states_seen_before_forward = Vec::new();
+
+        observe_reader_chunk(&mut foreground, &AGENT_EXIT_SEQUENCE[..split]);
+        states_seen_before_forward.push(foreground.is_active());
+        observe_reader_chunk(&mut foreground, &AGENT_EXIT_SEQUENCE[split..]);
+        states_seen_before_forward.push(foreground.is_active());
+
+        assert_eq!(states_seen_before_forward, vec![true, false]);
+    }
 
     /// 验证实际启动命令声明 ANSI 256 色与真彩色终端能力。
     #[test]

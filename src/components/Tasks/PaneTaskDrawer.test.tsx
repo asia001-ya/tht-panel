@@ -4,6 +4,8 @@ import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { PaneTask, PtySessionInfo } from "../../api/types";
 import {
+  taskCancel,
+  taskClose,
   taskCreate,
   taskDispatch,
   taskForward,
@@ -125,11 +127,90 @@ afterEach(() => {
 });
 
 describe("PaneTaskDrawer", () => {
+  it("加载当前工作区任务时不展示或操作旧任务", () => {
+    useTaskStore.setState({
+      tasks: [task("queued")],
+      loading: true,
+      drawerPaneId: "pane-server",
+    });
+
+    render(<PaneTaskDrawer />);
+
+    expect(screen.getByText("正在加载")).toBeTruthy();
+    expect(screen.queryByText("同步接口")).toBeNull();
+    expect(screen.queryByRole("button", { name: "接收并注入" })).toBeNull();
+    expect((screen.getByLabelText("目标窗格") as HTMLSelectElement).disabled).toBe(true);
+    expect((screen.getByLabelText("任务标题") as HTMLInputElement).disabled).toBe(true);
+    expect((screen.getByLabelText("任务内容") as HTMLTextAreaElement).disabled).toBe(true);
+    expect((screen.getByRole("button", { name: "创建任务" }) as HTMLButtonElement).disabled)
+      .toBe(true);
+  });
+
+  it("不展示 Pane ID 相同但属于其他保存工作区的任务", () => {
+    useTaskStore.setState({
+      tasks: [{ ...task("queued"), savedWorkspaceId: "saved-old" }],
+      loading: false,
+      drawerPaneId: "pane-server",
+    });
+
+    render(<PaneTaskDrawer />);
+
+    expect(screen.queryByText("同步接口")).toBeNull();
+    expect(screen.queryByRole("button", { name: "接收并注入" })).toBeNull();
+  });
+
   it("创建任务时只列出当前布局中其他已命名 Pane", () => {
     render(<PaneTaskDrawer />);
 
     expect(screen.getByRole("option", { name: "server" })).toBeTruthy();
     expect(screen.queryByRole("option", { name: "web" })).toBeNull();
+  });
+
+  it("使用 Native 会话所属项目名作为未显式命名 Pane 的默认名", () => {
+    const tree = useLayoutStore.getState().tree;
+    if (tree.type !== "split") throw new Error("测试布局必须为分屏");
+    const targetLeaf = tree.children[1];
+    if (targetLeaf.type !== "leaf") throw new Error("目标节点必须为叶子");
+    useLayoutStore.setState({
+      tree: {
+        ...tree,
+        children: [
+          tree.children[0],
+          {
+            ...targetLeaf,
+            name: undefined,
+            sessionIds: ["native:chat-1"],
+            activeSessionId: "native:chat-1",
+          },
+        ],
+      },
+    });
+    useWorkspaceStore.setState({
+      workspaces: [{
+        id: "project-native",
+        name: "Native 项目",
+        path: "D:\\AI\\native-project",
+        agent: "codex",
+        useGlobalConfig: true,
+        sortOrder: 0,
+        createdAt: "2026-07-15T00:00:00Z",
+      }],
+      historyCache: {
+        "project-native": [{
+          id: "chat-1",
+          workspaceId: "project-native",
+          name: "原生对话",
+          kind: "codex",
+          mode: "native",
+          createdAt: "2026-07-15T00:00:00Z",
+          updatedAt: "2026-07-15T00:00:00Z",
+        }],
+      },
+    });
+
+    render(<PaneTaskDrawer />);
+
+    expect(screen.getByRole("option", { name: "Native 项目" })).toBeTruthy();
   });
 
   it("使用冻结的 Pane 标识和名称创建任务", async () => {
@@ -210,6 +291,25 @@ describe("PaneTaskDrawer", () => {
     expect(screen.getByRole("button", { name: "重新确认" })).toBeTruthy();
   });
 
+  it("Tab 切回冻结会话后仍要求重新确认", async () => {
+    useTaskStore.setState({ tasks: [task("queued")], drawerPaneId: "pane-server" });
+    render(<PaneTaskDrawer />);
+    await userEvent.click(screen.getByRole("button", { name: "接收并注入" }));
+
+    act(() => {
+      useLayoutStore.getState().activateTab("pane-server", "pty-server-2");
+    });
+    act(() => {
+      useLayoutStore.getState().activateTab("pane-server", "pty-server");
+    });
+
+    expect(screen.getByText("活动会话已变化，请重新确认")).toBeTruthy();
+    expect((
+      screen.getByRole("button", { name: "确认接收并注入" }) as HTMLButtonElement
+    ).disabled).toBe(true);
+    expect(screen.getByRole("button", { name: "重新确认" })).toBeTruthy();
+  });
+
   it("关闭并重新打开抽屉时不保留旧确认态", async () => {
     useTaskStore.setState({ tasks: [task("queued")], drawerPaneId: "pane-server" });
     render(<PaneTaskDrawer />);
@@ -242,6 +342,71 @@ describe("PaneTaskDrawer", () => {
     });
   });
 
+  it("注入未完成时关闭或切换抽屉仍锁定同一任务", async () => {
+    let resolveDispatch: ((value: PaneTask) => void) | undefined;
+    vi.mocked(taskDispatch).mockImplementation(() => new Promise((resolve) => {
+      resolveDispatch = resolve;
+    }));
+    useTaskStore.setState({ tasks: [task("queued")], drawerPaneId: "pane-server" });
+    render(<PaneTaskDrawer />);
+    await userEvent.click(screen.getByRole("button", { name: "接收并注入" }));
+    await userEvent.click(screen.getByRole("button", { name: "确认接收并注入" }));
+
+    await userEvent.click(screen.getByTitle("关闭任务抽屉"));
+    act(() => useTaskStore.getState().openDrawer("pane-web"));
+    expect((
+      screen.getByRole("button", { name: "取消任务" }) as HTMLButtonElement
+    ).disabled).toBe(true);
+    act(() => useTaskStore.getState().openDrawer("pane-server"));
+    expect((
+      screen.getByRole("button", { name: "接收并注入" }) as HTMLButtonElement
+    ).disabled).toBe(true);
+    expect(taskDispatch).toHaveBeenCalledTimes(1);
+
+    await act(async () => {
+      resolveDispatch?.({ ...task("dispatched"), id: "task-queued" });
+    });
+  });
+
+  it("旧注入成功后不清除随后打开的其他任务确认", async () => {
+    let resolveDispatch: ((value: PaneTask) => void) | undefined;
+    vi.mocked(taskDispatch).mockImplementation(() => new Promise((resolve) => {
+      resolveDispatch = resolve;
+    }));
+    const firstTask = task("queued");
+    const secondTask = {
+      ...task("queued"),
+      id: "task-second",
+      title: "第二个任务",
+    };
+    useTaskStore.setState({
+      tasks: [firstTask, secondTask],
+      drawerPaneId: "pane-server",
+    });
+    render(<PaneTaskDrawer />);
+    await userEvent.click(screen.getAllByRole("button", { name: "接收并注入" })[0]);
+    await userEvent.click(screen.getByRole("button", { name: "确认接收并注入" }));
+
+    await userEvent.click(screen.getByTitle("关闭任务抽屉"));
+    act(() => useTaskStore.getState().openDrawer("pane-server"));
+    const secondReceiveButton = screen
+      .getAllByRole<HTMLButtonElement>("button", { name: "接收并注入" })
+      .find((button) => !button.disabled);
+    expect(secondReceiveButton).toBeDefined();
+    await userEvent.click(secondReceiveButton as HTMLButtonElement);
+    expect(screen.getByText(/任务 ID：task-second/)).toBeTruthy();
+
+    await act(async () => {
+      resolveDispatch?.({ ...task("dispatched"), id: firstTask.id });
+    });
+
+    expect(screen.getByText(/任务 ID：task-second/)).toBeTruthy();
+    expect(screen.getByRole("button", { name: "确认接收并注入" })).toBeTruthy();
+    expect(
+      useTaskStore.getState().tasks.find((item) => item.id === firstTask.id)?.status,
+    ).toBe("dispatched");
+  });
+
   it("目标 Pane 可以按完成或受阻上报", async () => {
     const reported = { ...task("reported"), id: "task-dispatched" };
     vi.mocked(taskReport).mockResolvedValue(reported);
@@ -271,6 +436,77 @@ describe("PaneTaskDrawer", () => {
     await userEvent.click(screen.getByRole("button", { name: "受阻并上报" }));
 
     expect(taskReport).toHaveBeenCalledWith("task-dispatched", "blocked", "接口受阻");
+  });
+
+  it("上报进行中禁用输入和两种结果动作并忽略重复提交", async () => {
+    const resolvers: Array<(value: PaneTask) => void> = [];
+    vi.mocked(taskReport).mockImplementation(() => new Promise((resolve) => {
+      resolvers.push(resolve);
+    }));
+    useTaskStore.setState({ tasks: [task("dispatched")], drawerPaneId: "pane-server" });
+    render(<PaneTaskDrawer />);
+    const reportInput = screen.getByRole("textbox", { name: "上报内容" });
+    const completedButton = screen.getByRole("button", { name: "完成并上报" });
+    const blockedButton = screen.getByRole("button", { name: "受阻并上报" });
+    await userEvent.type(reportInput, "接口已完成");
+
+    await userEvent.click(completedButton);
+
+    expect((reportInput as HTMLTextAreaElement).disabled).toBe(true);
+    expect((completedButton as HTMLButtonElement).disabled).toBe(true);
+    expect((blockedButton as HTMLButtonElement).disabled).toBe(true);
+    await userEvent.click(blockedButton);
+    expect(taskReport).toHaveBeenCalledTimes(1);
+    await act(async () => {
+      resolvers.forEach((resolve) => resolve({
+        ...task("reported"),
+        id: "task-dispatched",
+      }));
+    });
+  });
+
+  it("取消进行中禁用动作并忽略重复提交", async () => {
+    const resolvers: Array<(value: PaneTask) => void> = [];
+    vi.mocked(taskCancel).mockImplementation(() => new Promise((resolve) => {
+      resolvers.push(resolve);
+    }));
+    useTaskStore.setState({ tasks: [task("queued")], drawerPaneId: "pane-web" });
+    render(<PaneTaskDrawer />);
+    const cancelButton = screen.getByRole("button", { name: "取消任务" });
+
+    await userEvent.click(cancelButton);
+
+    expect((cancelButton as HTMLButtonElement).disabled).toBe(true);
+    await userEvent.click(cancelButton);
+    expect(taskCancel).toHaveBeenCalledTimes(1);
+    await act(async () => {
+      resolvers.forEach((resolve) => resolve({
+        ...task("cancelled"),
+        id: "task-queued",
+      }));
+    });
+  });
+
+  it("关闭进行中禁用动作并忽略重复提交", async () => {
+    const resolvers: Array<(value: PaneTask) => void> = [];
+    vi.mocked(taskClose).mockImplementation(() => new Promise((resolve) => {
+      resolvers.push(resolve);
+    }));
+    useTaskStore.setState({ tasks: [task("forwarded")], drawerPaneId: "pane-web" });
+    render(<PaneTaskDrawer />);
+    const closeButton = screen.getByRole("button", { name: "关闭任务" });
+
+    await userEvent.click(closeButton);
+
+    expect((closeButton as HTMLButtonElement).disabled).toBe(true);
+    await userEvent.click(closeButton);
+    expect(taskClose).toHaveBeenCalledTimes(1);
+    await act(async () => {
+      resolvers.forEach((resolve) => resolve({
+        ...task("closed"),
+        id: "task-forwarded",
+      }));
+    });
   });
 
   it("reported 任务可确认转交来源会话", async () => {
