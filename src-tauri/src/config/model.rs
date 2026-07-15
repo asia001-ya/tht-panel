@@ -163,6 +163,9 @@ pub struct SpawnRequest {
     pub kind: String,
     /// 会话指定供应商；缺失时使用项目默认供应商。
     pub provider_id: Option<String>,
+    /// 是否严格按请求解析供应商；缺失时保持旧回退行为。
+    #[serde(default)]
+    pub strict_provider: bool,
     /// 恢复历史会话时传 AI sessionId
     pub resume_session_id: Option<String>,
     /// 目标 leaf 列数

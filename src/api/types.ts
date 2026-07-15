@@ -159,6 +159,7 @@ export interface SpawnRequest {
   workspaceId?: string; // 有则从工作空间取 cwd 和配置
   kind: AgentKind; // claude/codex/shell
   providerId?: string;
+  strictProvider?: boolean; // true=严格按保存引用选择供应商；缺失 ID 表示系统配置
   resumeSessionId?: string; // 恢复历史会话时传 AI sessionId
   cols: number;
   rows: number; // 目标 leaf 当前尺寸，避免启动后立刻 resize 重绘

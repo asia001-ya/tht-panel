@@ -83,14 +83,20 @@ pub fn build_resolved_launch(
         });
     }
 
-    let provider = req
-        .provider_id
-        .as_deref()
-        .and_then(|id| unique_valid_provider(global, id))
-        .or_else(|| {
-            ws.and_then(|workspace| workspace.default_provider_id.as_deref())
-                .and_then(|id| unique_valid_provider(global, id))
-        });
+    let provider = if req.strict_provider {
+        req.provider_id
+            .as_deref()
+            .map(|id| resolve_strict_provider(global, id, &req.kind))
+            .transpose()?
+    } else {
+        req.provider_id
+            .as_deref()
+            .and_then(|id| unique_valid_provider(global, id))
+            .or_else(|| {
+                ws.and_then(|workspace| workspace.default_provider_id.as_deref())
+                    .and_then(|id| unique_valid_provider(global, id))
+            })
+    };
     let kind = provider
         .map(|profile| profile.driver.clone())
         .unwrap_or_else(|| req.kind.clone());
@@ -229,6 +235,39 @@ fn unique_valid_provider<'a>(global: &'a GlobalConfig, id: &str) -> Option<&'a P
         return None;
     }
     Some(provider)
+}
+
+/// 严格解析唯一、合法且与请求类型一致的命名供应商。
+/// 参数：global——全局配置；id——供应商标识；kind——请求会话类型。
+/// 返回：匹配的供应商；缺失、重复、非法或类型不匹配时返回配置错误。
+fn resolve_strict_provider<'a>(
+    global: &'a GlobalConfig,
+    id: &str,
+    kind: &str,
+) -> Result<&'a ProviderProfile, AppError> {
+    let mut candidates = global
+        .providers
+        .iter()
+        .filter(|candidate| candidate.id == id);
+    let provider = candidates
+        .next()
+        .ok_or_else(|| AppError::Config(format!("供应商不存在: {id}")))?;
+    if candidates.next().is_some() {
+        return Err(AppError::Config(format!("供应商标识不唯一: {id}")));
+    }
+    if !matches!(provider.driver.as_str(), "claude" | "codex") {
+        return Err(AppError::Config(format!(
+            "不支持的供应商驱动: {}",
+            provider.driver
+        )));
+    }
+    if provider.driver != kind {
+        return Err(AppError::Config(format!(
+            "供应商驱动与请求类型不匹配: 期望 {kind}，实际 {}",
+            provider.driver
+        )));
+    }
+    Ok(provider)
 }
 
 /// 生成命名 Claude 供应商专用的 flag 层 settings 文件。
@@ -396,10 +435,179 @@ mod tests {
             workspace_id: Some("project-1".to_string()),
             kind: "claude".to_string(),
             provider_id: Some(provider_id.to_string()),
+            strict_provider: false,
             resume_session_id: None,
             cols: 80,
             rows: 24,
         }
+    }
+
+    /// 验证严格模式可使用与请求类型一致的唯一合法命名供应商。
+    /// 参数：无；返回：无，断言失败时由测试框架报告。
+    #[test]
+    fn strict_named_provider_succeeds() {
+        let config_dir = unique_temp_dir();
+        let mut global = GlobalConfig::default();
+        global.providers = vec![provider(
+            "strict-provider",
+            "claude",
+            legacy_config("strict-provider"),
+        )];
+        let mut req = request("strict-provider");
+        req.strict_provider = true;
+
+        let launch = build_resolved_launch(&global, Some(&workspace()), &req, &config_dir)
+            .expect("严格模式应接受唯一且类型匹配的命名供应商");
+        let script = decode_script(&launch);
+        if config_dir.exists() {
+            std::fs::remove_dir_all(&config_dir).expect("应只清理本测试创建的唯一临时目录");
+        }
+
+        assert_eq!(launch.kind, "claude");
+        assert!(script.contains("strict-provider-model"));
+    }
+
+    /// 验证严格模式拒绝不存在的命名供应商，而不是回退到项目默认供应商。
+    /// 参数：无；返回：无，断言失败时由测试框架报告。
+    #[test]
+    fn strict_named_provider_rejects_missing_id() {
+        let config_dir = unique_temp_dir();
+        let mut global = GlobalConfig::default();
+        global.providers = vec![provider(
+            "project-default",
+            "claude",
+            legacy_config("project-default"),
+        )];
+        let mut ws = workspace();
+        ws.default_provider_id = Some("project-default".to_string());
+        let mut req = request("missing");
+        req.strict_provider = true;
+
+        let result = build_resolved_launch(&global, Some(&ws), &req, &config_dir);
+        if config_dir.exists() {
+            std::fs::remove_dir_all(&config_dir).expect("应只清理本测试创建的唯一临时目录");
+        }
+        let error = result.expect_err("严格模式不应回退不存在的命名供应商");
+
+        assert!(matches!(error, AppError::Config(_)));
+    }
+
+    /// 验证严格模式拒绝重复标识的命名供应商。
+    /// 参数：无；返回：无，断言失败时由测试框架报告。
+    #[test]
+    fn strict_named_provider_rejects_duplicate_id() {
+        let mut global = GlobalConfig::default();
+        global.providers = vec![
+            provider("duplicate", "claude", legacy_config("duplicate-a")),
+            provider("duplicate", "claude", legacy_config("duplicate-b")),
+        ];
+        let mut ws = workspace();
+        ws.default_provider_id = None;
+        let mut req = request("duplicate");
+        req.strict_provider = true;
+
+        let error = build_resolved_launch(&global, Some(&ws), &req, Path::new("."))
+            .expect_err("严格模式不应接受重复标识的命名供应商");
+
+        assert!(matches!(error, AppError::Config(_)));
+    }
+
+    /// 验证严格模式拒绝不受支持的供应商驱动。
+    /// 参数：无；返回：无，断言失败时由测试框架报告。
+    #[test]
+    fn strict_named_provider_rejects_unsupported_driver() {
+        let mut global = GlobalConfig::default();
+        global.providers = vec![provider(
+            "unsupported",
+            "gemini",
+            legacy_config("unsupported"),
+        )];
+        let mut ws = workspace();
+        ws.default_provider_id = None;
+        let mut req = request("unsupported");
+        req.strict_provider = true;
+
+        let error = build_resolved_launch(&global, Some(&ws), &req, Path::new("."))
+            .expect_err("严格模式不应接受不受支持的供应商驱动");
+
+        assert!(matches!(error, AppError::Config(_)));
+    }
+
+    /// 验证严格模式拒绝与请求会话类型不一致的合法供应商驱动。
+    /// 参数：无；返回：无，断言失败时由测试框架报告。
+    #[test]
+    fn strict_named_provider_rejects_driver_mismatch() {
+        let config_dir = unique_temp_dir();
+        let mut global = GlobalConfig::default();
+        global.providers = vec![provider(
+            "claude-provider",
+            "claude",
+            legacy_config("claude-provider"),
+        )];
+        let mut ws = workspace();
+        ws.default_provider_id = None;
+        let mut req = request("claude-provider");
+        req.kind = "codex".to_string();
+        req.strict_provider = true;
+
+        let result = build_resolved_launch(&global, Some(&ws), &req, &config_dir);
+        if config_dir.exists() {
+            std::fs::remove_dir_all(&config_dir).expect("应只清理本测试创建的唯一临时目录");
+        }
+        let error = result.expect_err("严格模式不应允许供应商驱动覆盖请求类型");
+
+        assert!(matches!(error, AppError::Config(_)));
+    }
+
+    /// 验证严格系统模式忽略项目默认供应商并沿用请求类型的系统配置。
+    /// 参数：无；返回：无，断言失败时由测试框架报告。
+    #[test]
+    fn strict_system_ignores_workspace_default_provider() {
+        let config_dir = unique_temp_dir();
+        let mut global = GlobalConfig::default();
+        global.providers = vec![provider(
+            "project-default",
+            "claude",
+            legacy_config("project-default"),
+        )];
+        let mut ws = workspace();
+        ws.default_provider_id = Some("project-default".to_string());
+        let mut req = request("unused");
+        req.kind = "codex".to_string();
+        req.provider_id = None;
+        req.strict_provider = true;
+
+        let launch = build_resolved_launch(&global, Some(&ws), &req, &config_dir)
+            .expect("严格系统模式应生成启动描述");
+        let script = decode_script(&launch);
+        if config_dir.exists() {
+            std::fs::remove_dir_all(&config_dir).expect("应只清理本测试创建的唯一临时目录");
+        }
+
+        assert_eq!(launch.kind, "codex");
+        assert!(launch.env.is_empty());
+        assert!(!script.contains("project-default-model"));
+    }
+
+    /// 验证 shell 启动在严格模式下仍完全绕过供应商校验。
+    /// 参数：无；返回：无，断言失败时由测试框架报告。
+    #[test]
+    fn strict_shell_ignores_provider_validation() {
+        let mut req = request("missing");
+        req.kind = "shell".to_string();
+        req.strict_provider = true;
+
+        let launch = build_resolved_launch(
+            &GlobalConfig::default(),
+            Some(&workspace()),
+            &req,
+            Path::new("."),
+        )
+        .expect("严格模式不应影响 shell 启动");
+
+        assert_eq!(launch.kind, "shell");
+        assert_eq!(launch.title, "PowerShell");
+        assert!(launch.env.is_empty());
     }
 
     /// 验证重复的请求供应商无效，并回退到唯一合法的项目默认供应商。
