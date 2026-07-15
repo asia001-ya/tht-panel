@@ -187,7 +187,11 @@ interface LayoutState {
    * @returns 不存在时返回 null，否则返回对应快照。
    */
   restoreSavedWorkspace: (savedWorkspaceId: string) => SavedWorkspaceLayout | null;
-  /** 删除指定的保存工作区；无返回值。 */
+  /**
+   * 删除指定的保存工作区。
+   * @param savedWorkspaceId 待删除的保存工作区 ID。
+   * @returns 无返回值。
+   */
   removeSavedWorkspace: (savedWorkspaceId: string) => void;
 }
 
@@ -201,14 +205,20 @@ export const useLayoutStore = create<LayoutState>((set, get) => ({
   /** 从后端加载布局；无参数，返回加载完成的 Promise。 */
   load: async () => {
     const layout = await layoutGet();
+    const savedWorkspaces = layout.savedWorkspaces ?? [];
+    const activeSavedWorkspaceId = savedWorkspaces.some(
+      (item) => item.id === layout.activeSavedWorkspaceId,
+    )
+      ? (layout.activeSavedWorkspaceId ?? null)
+      : null;
     if (!layout.tree) {
       const leaf = makeLeaf();
       set({
         tree: leaf,
         activePaneId: leaf.id,
-        savedWorkspaces: layout.savedWorkspaces ?? [],
+        savedWorkspaces,
         restoreErrors: {},
-        activeSavedWorkspaceId: layout.activeSavedWorkspaceId ?? null,
+        activeSavedWorkspaceId,
       });
       return;
     }
@@ -221,9 +231,9 @@ export const useLayoutStore = create<LayoutState>((set, get) => ({
     set({
       tree,
       activePaneId: active,
-      savedWorkspaces: layout.savedWorkspaces ?? [],
+      savedWorkspaces,
       restoreErrors: {},
-      activeSavedWorkspaceId: layout.activeSavedWorkspaceId ?? null,
+      activeSavedWorkspaceId,
     });
   },
 
@@ -435,11 +445,16 @@ export const useLayoutStore = create<LayoutState>((set, get) => ({
     return saved;
   },
 
+  /** 删除保存工作区；参数为快照 ID，删除活动快照时同步清空引用。 */
   removeSavedWorkspace: (savedWorkspaceId) => {
     set((state) => ({
       savedWorkspaces: state.savedWorkspaces.filter(
         (item) => item.id !== savedWorkspaceId,
       ),
+      activeSavedWorkspaceId:
+        state.activeSavedWorkspaceId === savedWorkspaceId
+          ? null
+          : state.activeSavedWorkspaceId,
     }));
     get().persist();
   },

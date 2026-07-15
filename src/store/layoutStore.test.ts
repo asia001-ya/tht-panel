@@ -43,6 +43,22 @@ const namedTree: PaneNode = {
   ],
 };
 
+const savedWorkspaceOne: SavedWorkspaceLayout = {
+  id: "saved-1",
+  name: "开发布局",
+  tree: namedTree,
+  activePaneId: "left",
+  createdAt: "2026-07-15T08:00:00.000Z",
+};
+
+const savedWorkspaceTwo: SavedWorkspaceLayout = {
+  id: "saved-2",
+  name: "测试布局",
+  tree: namedTree,
+  activePaneId: "right",
+  createdAt: "2026-07-15T09:00:00.000Z",
+};
+
 beforeEach(() => {
   vi.useFakeTimers();
   commandMocks.layoutGet.mockReset();
@@ -120,6 +136,24 @@ describe("布局状态", () => {
     );
   });
 
+  it("加载时把不存在的活动工作区 ID 归一为空值", async () => {
+    commandMocks.layoutGet.mockResolvedValue({
+      version: 1,
+      tree: {
+        type: "leaf",
+        id: "persisted-leaf",
+        locked: false,
+      },
+      activePaneId: "persisted-leaf",
+      activeSavedWorkspaceId: "missing-saved-workspace",
+      savedWorkspaces: [savedWorkspaceOne],
+    } satisfies PersistedLayout);
+
+    await useLayoutStore.getState().load();
+
+    expect(useLayoutStore.getState().activeSavedWorkspaceId).toBeNull();
+  });
+
   it("保存当前工作区时复制稳定会话引用并设为活动快照", () => {
     useLayoutStore.setState({ persist: vi.fn() });
     const sessionRefs: Record<string, SavedSessionRef> = {
@@ -160,6 +194,34 @@ describe("布局状态", () => {
     expect(useLayoutStore.getState().tree).toEqual(namedTree);
     expect(useLayoutStore.getState().tree).not.toBe(namedTree);
     expect(useLayoutStore.getState().activeSavedWorkspaceId).toBe(saved.id);
+  });
+
+  it("删除活动保存工作区时清除活动工作区 ID", () => {
+    useLayoutStore.setState({
+      savedWorkspaces: [savedWorkspaceOne, savedWorkspaceTwo],
+      activeSavedWorkspaceId: savedWorkspaceOne.id,
+      persist: vi.fn(),
+    });
+
+    useLayoutStore.getState().removeSavedWorkspace(savedWorkspaceOne.id);
+
+    expect(useLayoutStore.getState().savedWorkspaces).toEqual([savedWorkspaceTwo]);
+    expect(useLayoutStore.getState().activeSavedWorkspaceId).toBeNull();
+  });
+
+  it("删除非活动保存工作区时保留活动工作区 ID", () => {
+    useLayoutStore.setState({
+      savedWorkspaces: [savedWorkspaceOne, savedWorkspaceTwo],
+      activeSavedWorkspaceId: savedWorkspaceOne.id,
+      persist: vi.fn(),
+    });
+
+    useLayoutStore.getState().removeSavedWorkspace(savedWorkspaceTwo.id);
+
+    expect(useLayoutStore.getState().savedWorkspaces).toEqual([savedWorkspaceOne]);
+    expect(useLayoutStore.getState().activeSavedWorkspaceId).toBe(
+      savedWorkspaceOne.id,
+    );
   });
 
   it("在原窗格替换恢复后的会话 ID", () => {
