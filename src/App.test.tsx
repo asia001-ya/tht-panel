@@ -1,4 +1,5 @@
 // @vitest-environment jsdom
+import { useEffect } from "react";
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type {
@@ -22,6 +23,10 @@ const commandMocks = vi.hoisted(() => ({
   managedSessionCreate: vi.fn(async () => undefined),
   managedSessionUpdate: vi.fn(async () => undefined),
   ptySpawn: vi.fn(),
+}));
+
+const sidebarMocks = vi.hoisted(() => ({
+  locateWorkspace: vi.fn(),
 }));
 
 vi.mock("./api/commands", async (importOriginal) => ({
@@ -110,25 +115,39 @@ const legacyNativeSession: ManagedSession = {
 };
 
 vi.mock("./components/Sidebar/Sidebar", () => ({
+  /** 测试侧边栏记录定位请求，并模拟真实组件完成后的消费回调。 */
   Sidebar: ({
+    locateWorkspaceId,
+    onLocateWorkspaceHandled,
     onResume,
     onNewSession,
   }: {
+    locateWorkspaceId: string | null;
+    onLocateWorkspaceHandled?: () => void;
     onResume: (workspaceId: string, session: ManagedSession) => void;
     onNewSession: (workspaceId: string) => void;
-  }) => (
-    <aside>
-      <button type="button" onClick={() => onNewSession(workspace.id)}>
-        新会话
-      </button>
-      <button
-        type="button"
-        onClick={() => onResume(workspace.id, legacyNativeSession)}
-      >
-        恢复旧原生会话
-      </button>
-    </aside>
-  ),
+  }) => {
+    useEffect(() => {
+      if (locateWorkspaceId) {
+        sidebarMocks.locateWorkspace(locateWorkspaceId);
+        onLocateWorkspaceHandled?.();
+      }
+    }, [locateWorkspaceId, onLocateWorkspaceHandled]);
+    return (
+      <aside>
+        <output data-testid="sidebar-locate-workspace">{locateWorkspaceId}</output>
+        <button type="button" onClick={() => onNewSession(workspace.id)}>
+          新会话
+        </button>
+        <button
+          type="button"
+          onClick={() => onResume(workspace.id, legacyNativeSession)}
+        >
+          恢复旧原生会话
+        </button>
+      </aside>
+    );
+  },
 }));
 
 afterEach(cleanup);
@@ -222,6 +241,26 @@ describe("App 会话编排", () => {
     expect((onLocateWorkspace.mock.calls[0][0] as CustomEvent<string>).detail).toBe(
       workspace.id,
     );
+  });
+
+  it("折叠侧栏时可靠交付并一次性消费项目定位目标", async () => {
+    renderApp();
+    fireEvent.click(screen.getByRole("button", { name: "隐藏侧边栏" }));
+    expect(screen.queryByTestId("sidebar-locate-workspace")).toBeNull();
+
+    window.dispatchEvent(new CustomEvent("app:activate-workspace", { detail: 0 }));
+
+    await waitFor(() => expect(sidebarMocks.locateWorkspace).toHaveBeenCalledWith(workspace.id));
+    await waitFor(() => expect(screen.getByTestId("sidebar-locate-workspace").textContent).toBe(""));
+    expect(useWorkspaceStore.getState().expandedIds.has(workspace.id)).toBe(true);
+    expect(commandMocks.ptySpawn).not.toHaveBeenCalled();
+
+    sidebarMocks.locateWorkspace.mockClear();
+    fireEvent.click(screen.getByRole("button", { name: "隐藏侧边栏" }));
+    fireEvent.click(screen.getByRole("button", { name: "显示侧边栏" }));
+
+    await waitFor(() => expect(screen.getByTestId("sidebar-locate-workspace")).toBeTruthy());
+    expect(sidebarMocks.locateWorkspace).not.toHaveBeenCalled();
   });
 
   it("恢复旧 native 历史时打开 native Tab 且不启动 PTY", async () => {

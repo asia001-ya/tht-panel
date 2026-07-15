@@ -22,6 +22,8 @@ import {
 } from "../ui/icons";
 
 export interface SidebarProps {
+  locateWorkspaceId: string | null;
+  onLocateWorkspaceHandled: () => void;
   onResume: (wsId: string, entry: ManagedSession) => void;
   onNewShell: (wsId: string) => void;
   onNewSession: (wsId: string) => void;
@@ -41,10 +43,10 @@ function scrollWorkspaceIntoView(workspaceId: string): void {
 
 /**
  * 渲染侧边栏导航、项目列表和最近会话。
- * @param props 会话、Shell 与快捷终端操作回调。
+ * @param props 定位目标以及会话、Shell 与快捷终端操作回调。
  * @returns 侧边栏界面。
  */
-export function Sidebar({ onResume, onNewShell, onNewSession, onQuickShell }: SidebarProps): React.JSX.Element {
+export function Sidebar({ locateWorkspaceId, onLocateWorkspaceHandled, onResume, onNewShell, onNewSession, onQuickShell }: SidebarProps): React.JSX.Element {
   const workspaces = useWorkspaceStore((s) => s.workspaces);
   const loadWorkspaces = useWorkspaceStore((s) => s.load);
   const loadAllHistories = useWorkspaceStore((s) => s.loadAllHistories);
@@ -64,6 +66,14 @@ export function Sidebar({ onResume, onNewShell, onNewSession, onQuickShell }: Si
       void loadAllHistories();
     });
   }, [loadWorkspaces, loadAllHistories]);
+
+  // 折叠侧栏重新挂载时直接消费定位目标，避免全局事件监听尚未注册的竞态。
+  useEffect(() => {
+    if (locateWorkspaceId) {
+      scrollWorkspaceIntoView(locateWorkspaceId);
+      onLocateWorkspaceHandled();
+    }
+  }, [locateWorkspaceId, onLocateWorkspaceHandled]);
 
   useEffect(() => {
     /**

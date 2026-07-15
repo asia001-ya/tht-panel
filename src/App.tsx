@@ -102,8 +102,17 @@ export default function App(): React.JSX.Element {
   const [sidebarWidth, setSidebarWidth] = useState(() =>
     clampW(Number(localStorage.getItem(SIDEBAR_KEY)) || 240));
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+  const [sidebarLocateWorkspaceId, setSidebarLocateWorkspaceId] = useState<string | null>(null);
   useHotkeys();
   useTheme();
+
+  /**
+   * 清除侧边栏已消费的折叠定位请求。
+   * @returns 无返回值。
+   */
+  const clearSidebarLocation = useCallback((): void => {
+    setSidebarLocateWorkspaceId(null);
+  }, []);
 
   const showToast = useCallback((msg: string): void => {
     setToast(msg);
@@ -429,8 +438,8 @@ export default function App(): React.JSX.Element {
         workspaceStore.toggleExpand(ws.id);
       }
       if (sidebarCollapsed) {
+        setSidebarLocateWorkspaceId(ws.id);
         setSidebarCollapsed(false);
-        window.setTimeout(dispatchWorkspaceLocation, 0, ws.id);
         return;
       }
       dispatchWorkspaceLocation(ws.id);
@@ -449,6 +458,8 @@ export default function App(): React.JSX.Element {
       {!sidebarCollapsed && (
         <>
           <Sidebar
+            locateWorkspaceId={sidebarLocateWorkspaceId}
+            onLocateWorkspaceHandled={clearSidebarLocation}
             onResume={resumeSession}
             onNewShell={newShell}
             onNewSession={newSession}
