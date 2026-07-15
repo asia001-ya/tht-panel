@@ -152,9 +152,27 @@ pub fn build_resolved_launch(
         }
     }
 
+    // Codex TUI 覆盖只作用于当前子进程，不修改用户全局配置。
+    if kind == "codex" {
+        ai_args.extend([
+            "-c".to_string(),
+            "tui.animations=false".to_string(),
+            "-c".to_string(),
+            "tui.terminal_title=[]".to_string(),
+        ]);
+    }
+
     // env 注入（仅在有值时；不写入命令行避免密钥泄漏到进程列表）。
     match kind.as_str() {
         "codex" => {
+            env.push((
+                "COLORFGBG".to_string(),
+                if global.theme == "dark" {
+                    "15;0".to_string()
+                } else {
+                    "0;15".to_string()
+                },
+            ));
             if let Some(key) = non_empty(&resolved_cfg.api_key) {
                 env.push(("OPENAI_API_KEY".to_string(), key));
             }
@@ -585,7 +603,8 @@ mod tests {
         }
 
         assert_eq!(launch.kind, "codex");
-        assert!(launch.env.is_empty());
+        expect_env(&launch, "COLORFGBG", "0;15");
+        assert_eq!(launch.env.len(), 1, "严格系统模式只应注入主题环境");
         assert!(!script.contains("project-default-model"));
     }
 
@@ -755,11 +774,70 @@ mod tests {
 
             assert!(launch.args.iter().any(|arg| arg == "-NoExit"));
             assert!(launch.args.iter().any(|arg| arg == "-EncodedCommand"));
-            assert!(launch.env.is_empty(), "系统回退不应注入应用环境变量");
+            if kind == "codex" {
+                expect_env(&launch, "COLORFGBG", "0;15");
+                assert_eq!(launch.env.len(), 1, "Codex 系统回退只应注入主题环境");
+            } else {
+                assert!(launch.env.is_empty(), "Claude 系统回退不应注入应用环境变量");
+            }
             for marker in legacy_markers {
                 assert!(!script.contains(marker), "脚本不应包含旧配置标记 {marker}");
             }
         }
+    }
+
+    /// 验证浅色 Codex 系统回退注入可读主题并关闭 TUI 动画。
+    /// 参数：无；返回：无，断言失败时由测试框架报告。
+    #[test]
+    fn codex_terminal_light_uses_theme_and_tui_overrides() {
+        let mut ws = workspace();
+        ws.default_provider_id = None;
+        let mut req = request("unused");
+        req.kind = "codex".to_string();
+        req.provider_id = None;
+
+        let launch =
+            build_resolved_launch(&GlobalConfig::default(), Some(&ws), &req, Path::new("."))
+                .expect("浅色 Codex 应生成启动描述");
+        let script = decode_script(&launch);
+
+        expect_env(&launch, "COLORFGBG", "0;15");
+        assert!(script.contains("'tui.animations=false'"));
+        assert!(script.contains("'tui.terminal_title=[]'"));
+    }
+
+    /// 验证深色 Codex 恢复命令保留子命令顺序并使用深色主题环境。
+    /// 参数：无；返回：无，断言失败时由测试框架报告。
+    #[test]
+    fn codex_terminal_dark_preserves_resume_and_extra_args() {
+        let config_dir = unique_temp_dir();
+        let mut global = GlobalConfig::default();
+        global.theme = "dark".to_string();
+        global.providers = vec![provider(
+            "codex-dark",
+            "codex",
+            AgentConfig {
+                extra_args: vec!["--no-alt-screen".to_string()],
+                ..AgentConfig::default()
+            },
+        )];
+        let mut ws = workspace();
+        ws.default_provider_id = None;
+        let mut req = request("codex-dark");
+        req.kind = "codex".to_string();
+        req.resume_session_id = Some("session-1".to_string());
+
+        let launch = build_resolved_launch(&global, Some(&ws), &req, &config_dir)
+            .expect("深色 Codex 恢复应生成启动描述");
+        let script = decode_script(&launch);
+        if config_dir.exists() {
+            std::fs::remove_dir_all(&config_dir).expect("应只清理本测试创建的唯一临时目录");
+        }
+
+        expect_env(&launch, "COLORFGBG", "15;0");
+        assert!(script.contains("'codex' 'resume' 'session-1' '--no-alt-screen'"));
+        assert!(script.contains("'tui.animations=false'"));
+        assert!(script.contains("'tui.terminal_title=[]'"));
     }
 
     /// 验证 Codex 系统回退不注入或创建隔离 CODEX_HOME，并只清理本测试唯一目录。

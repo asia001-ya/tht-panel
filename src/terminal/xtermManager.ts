@@ -24,6 +24,21 @@ export interface CreateTermResult {
 }
 
 /**
+ * 把 DECSCUSR 参数映射为不闪烁的 xterm 光标样式。
+ * @param params CSI 控制序列参数。
+ * @returns block、underline 或 bar 光标样式。
+ */
+function steadyCursorStyle(
+  params: (number | number[])[],
+): "block" | "underline" | "bar" {
+  const first = params[0];
+  const shape = Array.isArray(first) ? first[0] : first;
+  if (shape === 3 || shape === 4) return "underline";
+  if (shape === 5 || shape === 6) return "bar";
+  return "block";
+}
+
+/**
  * 创建一个已装配好 addon 的 xterm 终端。
  * @param opts.fontSize 初始字号（px）
  * @param opts.scrollbackLines xterm 前端回滚行数
@@ -44,6 +59,15 @@ export function createTerm(opts: {
     cursorStyle: "bar",
     allowProposedApi: true,
   });
+
+  term.parser.registerCsiHandler(
+    { intermediates: " ", final: "q" },
+    (params) => {
+      term.options.cursorBlink = false;
+      term.options.cursorStyle = steadyCursorStyle(params);
+      return true;
+    },
+  );
 
   const fit = new FitAddon();
   const search = new SearchAddon();
