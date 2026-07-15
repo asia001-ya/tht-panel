@@ -15,6 +15,7 @@ import { useLayoutStore, preorderLeaves } from "./store/layoutStore";
 import { useSessionStore } from "./store/sessionStore";
 import { useSettingsStore } from "./store/settingsStore";
 import { useWorkspaceStore } from "./store/workspaceStore";
+import { useTaskStore } from "./store/taskStore";
 import App, { pendingSessions } from "./App";
 
 const commandMocks = vi.hoisted(() => ({
@@ -29,6 +30,7 @@ const commandMocks = vi.hoisted(() => ({
   ),
   ptyKill: vi.fn(async (_sessionId: string): Promise<void> => undefined),
   ptySpawn: vi.fn(),
+  taskList: vi.fn(async (_savedWorkspaceId?: string) => []),
 }));
 
 const sidebarMocks = vi.hoisted(() => ({
@@ -102,6 +104,9 @@ vi.mock("./components/PaneGrid/PaneGrid", () => ({
 vi.mock("./components/dialogs/WorkspaceDialog", () => ({ default: () => null }));
 vi.mock("./components/dialogs/SettingsDialog", () => ({ default: () => null }));
 vi.mock("./components/dialogs/ConfirmDialog", () => ({ default: () => null }));
+vi.mock("./components/Tasks/PaneTaskDrawer", () => ({
+  PaneTaskDrawer: () => <div data-testid="task-drawer-host" />,
+}));
 
 const providers: ProviderProfile[] = [
   {
@@ -354,6 +359,12 @@ beforeEach(() => {
     load: vi.fn(async () => undefined),
     persist: vi.fn(),
   });
+  useTaskStore.setState({
+    tasks: [],
+    loading: false,
+    error: null,
+    drawerPaneId: null,
+  });
   pendingSessions.set("pty-1", {
     workspaceId: workspace.id,
     kind: "claude",
@@ -374,6 +385,13 @@ function renderApp(): void {
 }
 
 describe("App 会话编排", () => {
+  it("渲染任务抽屉宿主并加载当前布局任务", async () => {
+    renderApp();
+
+    expect(screen.getByTestId("task-drawer-host")).toBeTruthy();
+    await waitFor(() => expect(commandMocks.taskList).toHaveBeenCalledWith(undefined));
+  });
+
   it("项目新会话按默认供应商启动 PowerShell PTY", async () => {
     useLayoutStore.setState({ tree: leaf, activePaneId: leaf.id });
     renderApp();

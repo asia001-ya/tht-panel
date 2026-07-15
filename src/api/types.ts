@@ -143,6 +143,48 @@ export interface PtySessionInfo {
   createdAt: string;
 }
 
+/** 窗格协作任务状态。 */
+export type TaskStatus =
+  | "queued"
+  | "dispatched"
+  | "reported"
+  | "forwarded"
+  | "closed"
+  | "cancelled";
+
+/** 窗格协作任务上报结果。 */
+export type TaskOutcome = "completed" | "blocked";
+
+/** 后端持久化的窗格协作任务。 */
+export interface PaneTask {
+  id: string;
+  savedWorkspaceId?: string;
+  sourcePaneId: string;
+  targetPaneId: string;
+  sourcePaneName: string;
+  targetPaneName: string;
+  title: string;
+  request: string;
+  status: TaskStatus;
+  report?: string;
+  outcome?: TaskOutcome;
+  dispatchedToSessionId?: string;
+  forwardedToSessionId?: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+/** 创建窗格协作任务的受控输入。 */
+export interface CreatePaneTaskRequest {
+  savedWorkspaceId?: string;
+  sourcePaneId: string;
+  targetPaneId: string;
+  sourcePaneName: string;
+  targetPaneName: string;
+  title: string;
+  request: string;
+}
+
 /** 历史会话条目（claude 与 codex 统一） */
 export interface SessionHistoryEntry {
   sessionId: string; // AI 侧会话 uuid（resume 用）

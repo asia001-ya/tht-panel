@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { LeafNode, PaneNode } from "../../api/types";
 import { preorderLeaves, useLayoutStore } from "../../store/layoutStore";
 import { useSessionStore } from "../../store/sessionStore";
+import { useTaskStore } from "../../store/taskStore";
 import { useWorkspaceStore } from "../../store/workspaceStore";
 import { PaneGrid } from "./PaneGrid";
 
@@ -296,6 +297,12 @@ beforeEach(() => {
     ],
     historyCache: {},
   });
+  useTaskStore.setState({
+    tasks: [],
+    loading: false,
+    error: null,
+    drawerPaneId: null,
+  });
 });
 
 describe("PaneGrid 窗格名称", () => {
@@ -437,6 +444,33 @@ describe("PaneGrid 窗格名称", () => {
     expect(input.getAttribute("aria-invalid")).toBe("true");
     expect(input.getAttribute("aria-describedby")).toBe(error.id);
     expect(getPaneName("leaf-left")).toBe("前端窗格");
+  });
+});
+
+describe("PaneGrid 任务入口", () => {
+  it("显示当前 Pane 待处理数量并打开对应任务抽屉", () => {
+    useTaskStore.setState({
+      tasks: [{
+        id: "task-1",
+        sourcePaneId: "leaf-right",
+        targetPaneId: "leaf-left",
+        sourcePaneName: "server",
+        targetPaneName: "web",
+        title: "同步接口",
+        request: "增加 /users 接口",
+        status: "queued",
+        createdAt: "2026-07-15T00:00:00Z",
+        updatedAt: "2026-07-15T00:00:00Z",
+      }],
+    });
+    renderPaneGrid();
+
+    const leftLeaf = document.querySelectorAll<HTMLElement>(".pane-leaf")[0];
+    const taskButton = leftLeaf.querySelector<HTMLButtonElement>(".pane-task-button");
+    expect(taskButton).not.toBeNull();
+    expect(taskButton?.querySelector(".pane-task-badge")?.textContent).toBe("1");
+    fireEvent.click(taskButton as HTMLButtonElement);
+    expect(useTaskStore.getState().drawerPaneId).toBe("leaf-left");
   });
 });
 

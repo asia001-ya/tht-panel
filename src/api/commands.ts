@@ -14,6 +14,9 @@ import type {
   PersistedLayout,
   PtyOutputMsg,
   NativePromptRequest,
+  PaneTask,
+  CreatePaneTaskRequest,
+  TaskOutcome,
 } from "./types";
 
 // ---- PTY 会话 ----
@@ -69,3 +72,86 @@ export const aiSessionDetect = (args: {
 // ---- 原生 AI 会话（不经过 PowerShell）----
 export const aiPrompt = (req: NativePromptRequest) =>
   invoke<string>("ai_prompt", { req });
+
+// ---- 窗格协作任务 ----
+
+/**
+ * 列出指定保存工作区或当前未保存布局的任务。
+ * @param savedWorkspaceId 保存工作区标识；省略表示当前未保存布局。
+ * @returns 后端任务列表。
+ */
+export function taskList(savedWorkspaceId?: string): Promise<PaneTask[]> {
+  return invoke<PaneTask[]>("task_list", { savedWorkspaceId });
+}
+
+/**
+ * 创建 queued 协作任务。
+ * @param req 受控任务创建输入。
+ * @returns 后端创建的任务。
+ */
+export function taskCreate(req: CreatePaneTaskRequest): Promise<PaneTask> {
+  return invoke<PaneTask>("task_create", { req });
+}
+
+/**
+ * 把任务注入目标活动会话。
+ * @param taskId 任务标识。
+ * @param targetPaneId 目标窗格标识。
+ * @param sessionId 目标 PTY 会话标识。
+ * @returns dispatched 任务。
+ */
+export function taskDispatch(
+  taskId: string,
+  targetPaneId: string,
+  sessionId: string,
+): Promise<PaneTask> {
+  return invoke<PaneTask>("task_dispatch", { taskId, targetPaneId, sessionId });
+}
+
+/**
+ * 上报已派发任务的结果。
+ * @param taskId 任务标识。
+ * @param outcome 完成或受阻结果。
+ * @param report 上报正文。
+ * @returns reported 任务。
+ */
+export function taskReport(
+  taskId: string,
+  outcome: TaskOutcome,
+  report: string,
+): Promise<PaneTask> {
+  return invoke<PaneTask>("task_report", { taskId, outcome, report });
+}
+
+/**
+ * 把上报结果注入来源活动会话。
+ * @param taskId 任务标识。
+ * @param sourcePaneId 来源窗格标识。
+ * @param sessionId 来源 PTY 会话标识。
+ * @returns forwarded 任务。
+ */
+export function taskForward(
+  taskId: string,
+  sourcePaneId: string,
+  sessionId: string,
+): Promise<PaneTask> {
+  return invoke<PaneTask>("task_forward", { taskId, sourcePaneId, sessionId });
+}
+
+/**
+ * 关闭已转交任务。
+ * @param taskId 任务标识。
+ * @returns closed 任务。
+ */
+export function taskClose(taskId: string): Promise<PaneTask> {
+  return invoke<PaneTask>("task_close", { taskId });
+}
+
+/**
+ * 取消尚未派发的任务。
+ * @param taskId 任务标识。
+ * @returns cancelled 任务。
+ */
+export function taskCancel(taskId: string): Promise<PaneTask> {
+  return invoke<PaneTask>("task_cancel", { taskId });
+}

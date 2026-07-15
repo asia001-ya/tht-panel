@@ -16,6 +16,7 @@ import { PanelLeftClose, PanelLeftOpen } from "./components/ui/icons";
 import WorkspaceDialog from "./components/dialogs/WorkspaceDialog";
 import SettingsDialog from "./components/dialogs/SettingsDialog";
 import ConfirmDialog from "./components/dialogs/ConfirmDialog";
+import { PaneTaskDrawer } from "./components/Tasks/PaneTaskDrawer";
 import { useHotkeys } from "./hooks/useHotkeys";
 import { useTheme } from "./hooks/useTheme";
 import { useSettingsStore } from "./store/settingsStore";
@@ -23,6 +24,7 @@ import { useWorkspaceStore } from "./store/workspaceStore";
 import { useLayoutStore, preorderLeaves } from "./store/layoutStore";
 import { useSessionStore } from "./store/sessionStore";
 import { useUiStore } from "./store/uiStore";
+import { useTaskStore } from "./store/taskStore";
 import {
   ptySpawn,
   ptyKill,
@@ -252,8 +254,14 @@ export default function App(): React.JSX.Element {
     clampW(Number(localStorage.getItem(SIDEBAR_KEY)) || 240));
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [sidebarLocateWorkspaceId, setSidebarLocateWorkspaceId] = useState<string | null>(null);
+  const activeSavedWorkspaceId = useLayoutStore((state) => state.activeSavedWorkspaceId);
+  const loadTasks = useTaskStore((state) => state.load);
   useHotkeys();
   useTheme();
+
+  useEffect(() => {
+    void loadTasks(activeSavedWorkspaceId ?? undefined);
+  }, [activeSavedWorkspaceId, loadTasks]);
 
   /**
    * 清除侧边栏已消费的折叠定位请求。
@@ -768,6 +776,7 @@ export default function App(): React.JSX.Element {
       <WorkspaceDialog />
       <SettingsDialog />
       <ConfirmDialog />
+      <PaneTaskDrawer />
 
       {toast && <div className="app-toast">{toast}</div>}
     </div>
