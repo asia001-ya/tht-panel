@@ -235,22 +235,37 @@
   flex: 0 0 auto;
 }
 
+.pane-name-slot {
+  position: relative;
+  flex: 0 1 120px;
+  width: 120px;
+  min-width: 48px;
+}
+
 .pane-name {
-  max-width: 120px;
+  display: block;
+  width: 100%;
+  height: 22px;
   padding: 0 4px;
   overflow: hidden;
+  background: transparent;
   color: var(--fg-faint);
+  border: 1px solid transparent;
+  border-radius: 3px;
+  font-family: inherit;
   font-size: 12px;
   font-weight: 500;
+  text-align: left;
   text-overflow: ellipsis;
   white-space: nowrap;
   cursor: text;
   user-select: none;
 }
 
-.pane-name-editor {
-  position: relative;
-  width: 120px;
+.pane-name:focus-visible {
+  border-color: var(--accent);
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 0;
 }
 
 .pane-name-input {
@@ -264,6 +279,11 @@
   font-family: inherit;
   font-size: 12px;
   outline: none;
+}
+
+.pane-name-input:focus-visible {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 1px var(--focus-ring);
 }
 
 .pane-name-input-error {

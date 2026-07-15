@@ -174,6 +174,17 @@ export function PaneLeaf({
   const isActive = activePaneId === leaf.id;
   const isDropTarget = dropTargetLeafId === leaf.id;
   const displayName = leaf.name ?? wsName ?? "未命名";
+  const nameErrorId = `pane-name-error-${leaf.id}`;
+
+  /**
+   * 进入窗格名称编辑态，并以当前显式名称或项目名初始化草稿。
+   * @returns 无返回值。
+   */
+  const beginNameEditing = (): void => {
+    setDraftName(leaf.name ?? wsName ?? "");
+    setNameError(null);
+    setEditing(true);
+  };
 
   /**
    * 保存当前名称草稿；名称重复时保留编辑态并展示 store 返回的错误。
@@ -221,52 +232,66 @@ export function PaneLeaf({
         </div>
 
         <div className="pane-actions">
-          {editing ? (
-            <div className="pane-name-editor">
-              <input
-                autoFocus
-                aria-label="窗格名称"
-                className={`pane-name-input${nameError ? " pane-name-input-error" : ""}`}
-                value={draftName}
-                onChange={(event) => {
-                  setDraftName(event.target.value);
-                  setNameError(null);
-                }}
-                onBlur={saveName}
-                onClick={(event) => event.stopPropagation()}
-                onKeyDown={(event) => {
-                  if (event.key === "Enter") {
-                    event.preventDefault();
-                    event.stopPropagation();
-                    saveName();
-                  } else if (event.key === "Escape") {
-                    event.preventDefault();
-                    event.stopPropagation();
+          <div className="pane-name-slot">
+            {editing ? (
+              <>
+                <input
+                  autoFocus
+                  aria-describedby={nameError ? nameErrorId : undefined}
+                  aria-invalid={nameError ? true : undefined}
+                  aria-label="窗格名称"
+                  className={`pane-name-input${nameError ? " pane-name-input-error" : ""}`}
+                  value={draftName}
+                  onChange={(event) => {
+                    setDraftName(event.target.value);
                     setNameError(null);
-                    setEditing(false);
-                  }
+                  }}
+                  onBlur={saveName}
+                  onClick={(event) => event.stopPropagation()}
+                  onKeyDown={(event) => {
+                    if (event.nativeEvent.isComposing) return;
+                    if (event.key === "Enter") {
+                      event.preventDefault();
+                      event.stopPropagation();
+                      saveName();
+                    } else if (event.key === "Escape") {
+                      event.preventDefault();
+                      event.stopPropagation();
+                      setNameError(null);
+                      setEditing(false);
+                    }
+                  }}
+                />
+                {nameError && (
+                  <span
+                    className="pane-name-error"
+                    id={nameErrorId}
+                    role="alert"
+                  >
+                    {nameError}
+                  </span>
+                )}
+              </>
+            ) : (
+              <button
+                className="pane-name"
+                title={displayName}
+                type="button"
+                onDoubleClick={(event) => {
+                  event.stopPropagation();
+                  beginNameEditing();
                 }}
-              />
-              {nameError && (
-                <span className="pane-name-error" role="alert">
-                  {nameError}
-                </span>
-              )}
-            </div>
-          ) : (
-            <span
-              className="pane-name"
-              title={displayName}
-              onDoubleClick={(event) => {
-                event.stopPropagation();
-                setDraftName(leaf.name ?? wsName ?? "");
-                setNameError(null);
-                setEditing(true);
-              }}
-            >
-              {displayName}
-            </span>
-          )}
+                onKeyDown={(event) => {
+                  if (event.key !== "Enter" && event.key !== "F2") return;
+                  event.preventDefault();
+                  event.stopPropagation();
+                  beginNameEditing();
+                }}
+              >
+                {displayName}
+              </button>
+            )}
+          </div>
           <IconButton
             title={leaf.locked ? "已锁定：点击解锁" : "未锁定：点击锁定"}
             onClick={(e) => { e.stopPropagation(); toggleLock(leaf.id); }}

@@ -333,6 +333,32 @@ describe("PaneGrid 窗格名称", () => {
     expect(screen.queryByRole("textbox", { name: "窗格名称" })).toBeNull();
   });
 
+  it("名称控件可用 Enter 和 F2 进入编辑", () => {
+    renderPaneGrid();
+
+    const nameButton = screen.getByRole("button", { name: "Panel" });
+    nameButton.focus();
+    fireEvent.keyDown(nameButton, { key: "Enter" });
+    expect(screen.getByRole("textbox", { name: "窗格名称" })).toBeTruthy();
+
+    fireEvent.keyDown(screen.getByRole("textbox", { name: "窗格名称" }), {
+      key: "Escape",
+    });
+    fireEvent.keyDown(screen.getByRole("button", { name: "Panel" }), {
+      key: "F2",
+    });
+    expect(screen.getByRole("textbox", { name: "窗格名称" })).toBeTruthy();
+  });
+
+  it("单击名称仍激活所属窗格但不进入编辑", () => {
+    renderPaneGrid();
+
+    fireEvent.click(screen.getByRole("button", { name: "未命名" }));
+
+    expect(useLayoutStore.getState().activePaneId).toBe("leaf-right");
+    expect(screen.queryByRole("textbox", { name: "窗格名称" })).toBeNull();
+  });
+
   it("按 Escape 取消名称修改", () => {
     renderPaneGrid();
 
@@ -354,6 +380,31 @@ describe("PaneGrid 窗格名称", () => {
     fireEvent.blur(input);
 
     expect(getPaneName("leaf-left")).toBe("server");
+  });
+
+  it("IME 组合输入期间忽略 Enter 和 Escape", () => {
+    renderPaneGrid();
+
+    fireEvent.doubleClick(screen.getByText("Panel"));
+    const input = screen.getByRole("textbox", { name: "窗格名称" });
+    fireEvent.change(input, { target: { value: "服务器" } });
+    fireEvent.keyDown(input, { key: "Enter", isComposing: true });
+    fireEvent.keyDown(input, { key: "Escape", isComposing: true });
+
+    expect(screen.getByRole("textbox", { name: "窗格名称" })).toBe(input);
+    expect(getPaneName("leaf-left")).toBeUndefined();
+  });
+
+  it("展示态与编辑态共用稳定名称容器", () => {
+    renderPaneGrid();
+
+    const displaySlot = screen.getByText("Panel").closest(".pane-name-slot");
+    expect(displaySlot).not.toBeNull();
+    fireEvent.doubleClick(screen.getByText("Panel"));
+
+    expect(
+      screen.getByRole("textbox", { name: "窗格名称" }).closest(".pane-name-slot"),
+    ).toBe(displaySlot);
   });
 
   it("空名称调用 store 清除显式名并回退项目名", () => {
@@ -380,8 +431,11 @@ describe("PaneGrid 窗格名称", () => {
     fireEvent.change(input, { target: { value: "server" } });
     fireEvent.keyDown(input, { key: "Enter" });
 
-    expect(screen.getByRole("alert").textContent).toBe("窗格名称已存在");
+    const error = screen.getByRole("alert");
+    expect(error.textContent).toBe("窗格名称已存在");
     expect(screen.getByRole("textbox", { name: "窗格名称" })).toBe(input);
+    expect(input.getAttribute("aria-invalid")).toBe("true");
+    expect(input.getAttribute("aria-describedby")).toBe(error.id);
     expect(getPaneName("leaf-left")).toBe("前端窗格");
   });
 });
