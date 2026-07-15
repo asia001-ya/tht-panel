@@ -139,6 +139,21 @@ function providerValidationError(
 }
 
 /**
+ * 判断运行时 PTY 是否与保存的终端引用身份一致。
+ * @param runtime 待复用的运行时 PTY。
+ * @param ref 保存快照中的稳定会话引用。
+ * @returns 引用为终端且工作空间、会话类型均一致时返回 true。
+ */
+function runtimeMatchesRef(
+  runtime: PtySessionInfo,
+  ref: SavedSessionRef,
+): boolean {
+  return ref.mode === "terminal"
+    && runtime.workspaceId === ref.workspaceId
+    && runtime.kind === ref.kind;
+}
+
+/**
  * 为旧快照中没有稳定引用的 Tab 推导引用或原生会话。
  * @param oldTabId 快照中的旧 Tab ID。
  * @param managedSessions 已加载的自管会话。
@@ -259,11 +274,7 @@ function planTabRestore(
 
   if (oldRuntime && oldRuntime.state !== "dead") {
     if (savedRef) {
-      if (
-        savedRef.mode !== "terminal"
-        || oldRuntime.workspaceId !== savedRef.workspaceId
-        || oldRuntime.kind !== savedRef.kind
-      ) {
+      if (!runtimeMatchesRef(oldRuntime, savedRef)) {
         return restoreError(leafId, oldTabId, "存活 PTY 与保存引用不一致");
       }
 
@@ -283,8 +294,7 @@ function planTabRestore(
           if (
             currentRuntime
             && currentRuntime.state !== "dead"
-            && currentRuntime.workspaceId === savedRef.workspaceId
-            && currentRuntime.kind === savedRef.kind
+            && runtimeMatchesRef(currentRuntime, savedRef)
           ) {
             return {
               kind: "keep",
@@ -319,13 +329,22 @@ function planTabRestore(
     ? managedByRef
     : legacy?.managed ?? managedByOldPty;
 
-  if (managed && managed.kind !== ref.kind) {
+  if (
+    managed
+    && (
+      managed.workspaceId !== ref.workspaceId
+      || managed.kind !== ref.kind
+    )
+  ) {
     return restoreError(leafId, oldTabId, "自管会话类型与保存引用不一致");
   }
 
   if (ref.mode === "terminal" && managed?.ptySessionId) {
     const currentRuntime = runtimeSessions[managed.ptySessionId];
     if (currentRuntime && currentRuntime.state !== "dead") {
+      if (!runtimeMatchesRef(currentRuntime, ref)) {
+        return restoreError(leafId, oldTabId, "替代 PTY 与保存引用不一致");
+      }
       return {
         kind: "keep",
         leafId,

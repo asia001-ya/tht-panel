@@ -306,7 +306,7 @@ describe("保存工作区恢复规划", () => {
     expect(planWorkspaceRestore({
       snapshot: snapshot(leafTree(["pty-old"]), { "pty-old": ref }),
       runtimeSessions: {
-        "pty-old": runtimeSession("pty-old", { state: "running" }),
+        "pty-old": runtimeSession("pty-old", { state: "dead" }),
         "pty-new": runtimeSession("pty-new", { state: "running" }),
       },
       managedSessions: [managed],
@@ -321,6 +321,85 @@ describe("保存工作区恢复规划", () => {
         managedSessionId: "managed-1",
       },
     ]);
+  });
+
+  it("替代 PTY 存活但自管会话工作空间与保存引用不一致时拒绝复用", () => {
+    const ref: SavedSessionRef = {
+      managedSessionId: "managed-1",
+      workspaceId: WORKSPACE_ID,
+      kind: "claude",
+      mode: "terminal",
+    };
+
+    expect(planWorkspaceRestore({
+      snapshot: snapshot(leafTree(["pty-old"]), { "pty-old": ref }),
+      runtimeSessions: {
+        "pty-new": runtimeSession("pty-new", { state: "running" }),
+      },
+      managedSessions: [managedSession("managed-1", {
+        workspaceId: "workspace-2",
+        ptySessionId: "pty-new",
+      })],
+      workspaces: [workspace, { ...workspace, id: "workspace-2" }],
+      providers,
+    })[0]).toMatchObject({
+      kind: "error",
+      oldTabId: "pty-old",
+    });
+  });
+
+  it("替代 PTY 存活但运行时工作空间与保存引用不一致时拒绝复用", () => {
+    const ref: SavedSessionRef = {
+      managedSessionId: "managed-1",
+      workspaceId: WORKSPACE_ID,
+      kind: "claude",
+      mode: "terminal",
+    };
+
+    expect(planWorkspaceRestore({
+      snapshot: snapshot(leafTree(["pty-old"]), { "pty-old": ref }),
+      runtimeSessions: {
+        "pty-new": runtimeSession("pty-new", {
+          workspaceId: "workspace-2",
+          state: "running",
+        }),
+      },
+      managedSessions: [managedSession("managed-1", {
+        ptySessionId: "pty-new",
+      })],
+      workspaces: [workspace, { ...workspace, id: "workspace-2" }],
+      providers,
+    })[0]).toMatchObject({
+      kind: "error",
+      oldTabId: "pty-old",
+    });
+  });
+
+  it("替代 PTY 存活但运行时类型与保存引用不一致时拒绝复用", () => {
+    const ref: SavedSessionRef = {
+      managedSessionId: "managed-1",
+      workspaceId: WORKSPACE_ID,
+      kind: "claude",
+      mode: "terminal",
+    };
+
+    expect(planWorkspaceRestore({
+      snapshot: snapshot(leafTree(["pty-old"]), { "pty-old": ref }),
+      runtimeSessions: {
+        "pty-new": runtimeSession("pty-new", {
+          kind: "codex",
+          state: "running",
+        }),
+      },
+      managedSessions: [managedSession("managed-1", {
+        ptySessionId: "pty-new",
+      })],
+      workspaces: [workspace],
+      providers,
+    })[0]).toMatchObject({
+      kind: "error",
+      oldTabId: "pty-old",
+    });
   });
 
   it("AI 历史会话需要重启时把匹配类型的自管会话附到 spawn", () => {
