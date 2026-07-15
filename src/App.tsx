@@ -206,12 +206,13 @@ export default function App(): React.JSX.Element {
   }, [showToast]);
 
   /**
-   * 按 Tab 顺序释放窗格内的终端，全部成功后再关闭窗格。
+   * 按 Tab 顺序释放窗格内的终端；仅终止失败保留窗格，历史同步失败统一提示。
    * @param leaf 待关闭窗格的当前快照。
    * @returns 关闭流程完成后解析。
    */
   const closeSessionPane = useCallback(async (leaf: LeafNode): Promise<void> => {
     const releasedSessionIds: string[] = [];
+    const historyErrors: unknown[] = [];
     for (const sessionId of leaf.sessionIds) {
       if (parseNativeConversationTabId(sessionId) !== null) continue;
 
@@ -222,18 +223,15 @@ export default function App(): React.JSX.Element {
       }
       if (result.status === "history-failed") {
         releasedSessionIds.push(sessionId);
+        historyErrors.push(result.error);
+        continue;
       }
 
       const layout = useLayoutStore.getState();
       for (const releasedSessionId of releasedSessionIds) {
         layout.closeTab(leaf.id, releasedSessionId);
       }
-      const detail = releaseErrorMessage(result.error);
-      showToast(
-        result.status === "kill-failed"
-          ? `终端关闭失败，窗格已保留：${detail}`
-          : `终端已关闭，但历史同步失败：${detail}`,
-      );
+      showToast(`终端关闭失败，窗格已保留：${releaseErrorMessage(result.error)}`);
       return;
     }
 
@@ -243,9 +241,14 @@ export default function App(): React.JSX.Element {
       for (const sessionId of leaf.sessionIds) {
         layout.closeTab(leaf.id, sessionId);
       }
-      return;
+    } else {
+      layout.closePane(leaf.id);
     }
-    layout.closePane(leaf.id);
+    if (historyErrors.length > 0) {
+      showToast(
+        `终端已关闭，但历史同步失败：${historyErrors.map(releaseErrorMessage).join("；")}`,
+      );
+    }
   }, [showToast]);
 
   const startSidebarDrag = useCallback((e: React.MouseEvent): void => {

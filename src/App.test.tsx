@@ -529,6 +529,33 @@ describe("App 关闭会话生命周期", () => {
     ]);
   });
 
+  it("历史同步失败时继续释放后续终端并在全部终止后关闭根窗格", async () => {
+    const rootLeaf = createSessionTree();
+    if (rootLeaf.type !== "split") throw new Error("测试布局必须为分屏");
+    useLayoutStore.setState({
+      tree: rootLeaf.children[0],
+      activePaneId: "leaf-1",
+    });
+    commandMocks.managedSessionUpdate.mockRejectedValueOnce(new Error("历史服务离线"));
+    renderApp();
+
+    fireEvent.click(screen.getByRole("button", { name: "关闭窗格" }));
+
+    await waitFor(() => expect(commandMocks.ptyKill).toHaveBeenCalledTimes(2));
+    expect(commandMocks.ptyKill.mock.calls.map(([sessionId]) => sessionId)).toEqual([
+      "pty-1",
+      "pty-2",
+    ]);
+    await waitFor(() => {
+      const tree = useLayoutStore.getState().tree;
+      expect(tree.type).toBe("leaf");
+      if (tree.type !== "leaf") return;
+      expect(tree.sessionIds).toEqual([]);
+      expect(tree.activeSessionId).toBeNull();
+    });
+    expect(screen.getByText("终端已关闭，但历史同步失败：历史服务离线")).toBeTruthy();
+  });
+
   it("恢复保存工作区时不终止当前 PTY", () => {
     renderApp();
 
