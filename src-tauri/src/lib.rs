@@ -7,6 +7,7 @@
 //! - setup：创建系统托盘；
 //! - on_window_event：拦截窗口关闭为 hide（进托盘保活，风险 10）。
 
+pub mod collaboration;
 pub mod commands;
 pub mod config;
 pub mod error;
