@@ -23,14 +23,14 @@ import { useWorkspaceStore } from "./store/workspaceStore";
 import { useLayoutStore, preorderLeaves } from "./store/layoutStore";
 import { useSessionStore } from "./store/sessionStore";
 import { useUiStore } from "./store/uiStore";
-import { ptySpawn, appQuit, managedSessionCreate, managedSessionUpdate, aiSessionDetect } from "./api/commands";
+import { ptySpawn, ptyKill, appQuit, managedSessionCreate, managedSessionUpdate, aiSessionDetect } from "./api/commands";
 import { onSessionState, onSessionExit, onQuitRequest } from "./api/events";
 import type { LeafNode, ManagedSession, SpawnRequest } from "./api/types";
 import {
   resolveNewTerminalSelection,
   resolveTerminalResumeSelection,
 } from "./lib/providers";
-import { nativeConversationTabId } from "./lib/nativeConversation";
+import { nativeConversationTabId, parseNativeConversationTabId } from "./lib/nativeConversation";
 import { workspaceIdForTab } from "./lib/workItems";
 
 const INIT_COLS = 80;
@@ -54,6 +54,61 @@ export const pendingSessions = new Map<
   { workspaceId: string; kind: string; providerId?: string }
 >();
 const resumingIds = new Set<string>();
+
+type TerminalReleaseResult =
+  | { status: "released" }
+  | { status: "kill-failed"; error: unknown }
+  | { status: "history-failed"; error: unknown };
+
+/**
+ * 释放一个终端会话，并清理前端镜像与 ManagedSession 的运行时绑定。
+ * @param sessionId 待释放的 PTY 会话 ID。
+ * @returns 释放结果；区分终止失败与终止后历史同步失败。
+ */
+async function releaseTerminalSession(
+  sessionId: string,
+): Promise<TerminalReleaseResult> {
+  try {
+    await ptyKill(sessionId);
+  } catch (error) {
+    return { status: "kill-failed", error };
+  }
+
+  try {
+    useSessionStore.getState().remove(sessionId);
+    pendingSessions.delete(sessionId);
+
+    let managedSession: ManagedSession | undefined;
+    for (const list of Object.values(
+      useWorkspaceStore.getState().historyCache,
+    )) {
+      managedSession = list.find((entry) => entry.ptySessionId === sessionId);
+      if (managedSession) break;
+    }
+    if (managedSession) {
+      await managedSessionUpdate({
+        ...managedSession,
+        ptySessionId: undefined,
+        updatedAt: new Date().toISOString(),
+      });
+      await useWorkspaceStore.getState().loadHistory(managedSession.workspaceId);
+    }
+    return { status: "released" };
+  } catch (error) {
+    return { status: "history-failed", error };
+  }
+}
+
+/**
+ * 把未知异常转换为适合 toast 展示的简短文本。
+ * @param error 捕获到的未知异常。
+ * @returns 非空错误信息。
+ */
+function releaseErrorMessage(error: unknown): string {
+  if (error instanceof Error && error.message) return error.message;
+  const message = String(error);
+  return message || "未知错误";
+}
 
 function scheduleAiDetect(
   managed: ManagedSession,
@@ -118,6 +173,80 @@ export default function App(): React.JSX.Element {
     setToast(msg);
     window.setTimeout(() => setToast((cur) => (cur === msg ? null : cur)), 2200);
   }, []);
+
+  /**
+   * 关闭一个 Tab；原生会话只关闭视图，终端会话完成资源释放后再关闭视图。
+   * @param leafId Tab 所在窗格 ID。
+   * @param sessionId 待关闭的 Tab 会话 ID。
+   * @returns 关闭流程完成后解析。
+   */
+  const closeSessionTab = useCallback(async (
+    leafId: string,
+    sessionId: string,
+  ): Promise<void> => {
+    const layout = useLayoutStore.getState();
+    if (parseNativeConversationTabId(sessionId) !== null) {
+      layout.closeTab(leafId, sessionId);
+      return;
+    }
+
+    const result = await releaseTerminalSession(sessionId);
+    if (result.status === "released") {
+      layout.closeTab(leafId, sessionId);
+      return;
+    }
+    if (result.status === "history-failed") {
+      layout.closeTab(leafId, sessionId);
+      showToast(
+        `终端已关闭，但历史同步失败：${releaseErrorMessage(result.error)}`,
+      );
+      return;
+    }
+    showToast(`终端关闭失败，Tab 已保留：${releaseErrorMessage(result.error)}`);
+  }, [showToast]);
+
+  /**
+   * 按 Tab 顺序释放窗格内的终端，全部成功后再关闭窗格。
+   * @param leaf 待关闭窗格的当前快照。
+   * @returns 关闭流程完成后解析。
+   */
+  const closeSessionPane = useCallback(async (leaf: LeafNode): Promise<void> => {
+    const releasedSessionIds: string[] = [];
+    for (const sessionId of leaf.sessionIds) {
+      if (parseNativeConversationTabId(sessionId) !== null) continue;
+
+      const result = await releaseTerminalSession(sessionId);
+      if (result.status === "released") {
+        releasedSessionIds.push(sessionId);
+        continue;
+      }
+      if (result.status === "history-failed") {
+        releasedSessionIds.push(sessionId);
+      }
+
+      const layout = useLayoutStore.getState();
+      for (const releasedSessionId of releasedSessionIds) {
+        layout.closeTab(leaf.id, releasedSessionId);
+      }
+      const detail = releaseErrorMessage(result.error);
+      showToast(
+        result.status === "kill-failed"
+          ? `终端关闭失败，窗格已保留：${detail}`
+          : `终端已关闭，但历史同步失败：${detail}`,
+      );
+      return;
+    }
+
+    const layout = useLayoutStore.getState();
+    const currentTree = layout.tree;
+    if (currentTree.type === "leaf" && currentTree.id === leaf.id) {
+      for (const sessionId of leaf.sessionIds) {
+        layout.closeTab(leaf.id, sessionId);
+      }
+      return;
+    }
+    layout.closePane(leaf.id);
+  }, [showToast]);
 
   const startSidebarDrag = useCallback((e: React.MouseEvent): void => {
     e.preventDefault();
@@ -480,7 +609,10 @@ export default function App(): React.JSX.Element {
             : <PanelLeftClose size={16} strokeWidth={1.5} />}
         </button>
         <div className="pane-grid-wrap">
-          <PaneGrid />
+          <PaneGrid
+            onCloseTab={closeSessionTab}
+            onClosePane={closeSessionPane}
+          />
         </div>
       </main>
 

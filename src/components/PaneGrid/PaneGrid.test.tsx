@@ -2,8 +2,8 @@
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import type { ReactNode } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { PaneNode } from "../../api/types";
-import { useLayoutStore } from "../../store/layoutStore";
+import type { LeafNode, PaneNode } from "../../api/types";
+import { preorderLeaves, useLayoutStore } from "../../store/layoutStore";
 import { PaneGrid } from "./PaneGrid";
 
 const PANE_DRAG_TYPE = "application/x-tht-pane";
@@ -108,8 +108,8 @@ function createTestTree(): PaneNode {
       {
         type: "leaf",
         id: "leaf-left",
-        sessionIds: [],
-        activeSessionId: null,
+        sessionIds: ["pty-left-1", "pty-left-2"],
+        activeSessionId: "pty-left-1",
         locked: false,
       },
       {
@@ -170,12 +170,36 @@ interface RenderedPaneGrid {
   targetLeaf: HTMLElement;
 }
 
+interface CloseCallbacks {
+  onCloseTab: (leafId: string, sessionId: string) => Promise<void>;
+  onClosePane: (leaf: LeafNode) => Promise<void>;
+}
+
+/**
+ * 创建关闭 Tab 与窗格的异步回调替身。
+ * @returns 可传给 PaneGrid 并用于断言调用参数的回调集合。
+ */
+function createCloseCallbacks(): CloseCallbacks {
+  return {
+    onCloseTab: vi.fn(async () => undefined),
+    onClosePane: vi.fn(async () => undefined),
+  };
+}
+
 /**
  * 渲染真实布局 store 驱动的 PaneGrid，并返回拖放所需节点。
+ * @param callbacks 关闭 Tab 与窗格的异步回调。
  * @returns 源拖动句柄、源叶子和目标叶子。
  */
-function renderPaneGrid(): RenderedPaneGrid {
-  render(<PaneGrid />);
+function renderPaneGrid(
+  callbacks: CloseCallbacks = createCloseCallbacks(),
+): RenderedPaneGrid {
+  render(
+    <PaneGrid
+      onCloseTab={callbacks.onCloseTab}
+      onClosePane={callbacks.onClosePane}
+    />,
+  );
   const leaves = Array.from(document.querySelectorAll<HTMLElement>(".pane-leaf"));
   const handles = screen.getAllByTitle("拖动到其他窗口交换位置");
   if (leaves.length !== 2 || handles.length !== 2) {
@@ -214,6 +238,50 @@ beforeEach(() => {
     persist: vi.fn(),
     setRatio: originalSetRatio,
     swapPaneContents: originalSwapPaneContents,
+  });
+});
+
+describe("PaneGrid 关闭委托", () => {
+  it("点击 Tab 关闭图标时只调用关闭回调且不直接修改布局", () => {
+    const callbacks = createCloseCallbacks();
+    const originalTree = useLayoutStore.getState().tree;
+    renderPaneGrid(callbacks);
+
+    const closeIcons = document.querySelectorAll<HTMLElement>(".pane-tab-close");
+    fireEvent.click(closeIcons[0]);
+
+    expect(callbacks.onCloseTab).toHaveBeenCalledOnce();
+    expect(callbacks.onCloseTab).toHaveBeenCalledWith("leaf-left", "pty-left-1");
+    expect(useLayoutStore.getState().tree).toBe(originalTree);
+  });
+
+  it("中键点击 Tab 时只调用关闭回调且不直接修改布局", () => {
+    const callbacks = createCloseCallbacks();
+    const originalTree = useLayoutStore.getState().tree;
+    renderPaneGrid(callbacks);
+
+    const tabs = document.querySelectorAll<HTMLElement>(".pane-tab");
+    fireEvent(tabs[1], new MouseEvent("auxclick", { bubbles: true, button: 1 }));
+
+    expect(callbacks.onCloseTab).toHaveBeenCalledOnce();
+    expect(callbacks.onCloseTab).toHaveBeenCalledWith("leaf-left", "pty-left-2");
+    expect(useLayoutStore.getState().tree).toBe(originalTree);
+  });
+
+  it("点击关闭窗格时只传递叶子快照且不直接修改布局", () => {
+    const callbacks = createCloseCallbacks();
+    const originalTree = useLayoutStore.getState().tree;
+    const originalLeaf = preorderLeaves(originalTree).find(
+      (item) => item.id === "leaf-left",
+    );
+    if (!originalLeaf) throw new Error("测试布局必须包含左侧窗格");
+    renderPaneGrid(callbacks);
+
+    fireEvent.click(screen.getAllByTitle("关闭此分屏")[0]);
+
+    expect(callbacks.onClosePane).toHaveBeenCalledOnce();
+    expect(callbacks.onClosePane).toHaveBeenCalledWith(originalLeaf);
+    expect(useLayoutStore.getState().tree).toBe(originalTree);
   });
 });
 

@@ -27,12 +27,22 @@ interface PaneTabProps {
   leafId: string;
   sessionId: string;
   active: boolean;
+  onCloseTab: (leafId: string, sessionId: string) => Promise<void>;
 }
 
-function PaneTab({ leafId, sessionId, active }: PaneTabProps): React.ReactElement {
+/**
+ * 渲染单个会话 Tab，并把关闭意图交给应用层生命周期回调。
+ * @param props 窗格 ID、会话 ID、激活状态与关闭回调。
+ * @returns 单个会话 Tab 元素。
+ */
+function PaneTab({
+  leafId,
+  sessionId,
+  active,
+  onCloseTab,
+}: PaneTabProps): React.ReactElement {
   const activateTab = useLayoutStore((s) => s.activateTab);
   const setActive = useLayoutStore((s) => s.setActive);
-  const closeTab = useLayoutStore((s) => s.closeTab);
 
   const nativeConversationId = parseNativeConversationTabId(sessionId);
   const managedName = useWorkspaceStore((s) => {
@@ -62,14 +72,20 @@ function PaneTab({ leafId, sessionId, active }: PaneTabProps): React.ReactElemen
         activateTab(leafId, sessionId);
       }}
       onAuxClick={(e) => {
-        if (e.button === 1) { e.stopPropagation(); closeTab(leafId, sessionId); }
+        if (e.button === 1) {
+          e.stopPropagation();
+          void onCloseTab(leafId, sessionId);
+        }
       }}
     >
       <span className="pane-status-dot" data-state={state} />
       <span className="pane-tab-label">{label}</span>
       <span
         className="pane-tab-close"
-        onClick={(e) => { e.stopPropagation(); closeTab(leafId, sessionId); }}
+        onClick={(e) => {
+          e.stopPropagation();
+          void onCloseTab(leafId, sessionId);
+        }}
       >
         ×
       </span>
@@ -81,6 +97,8 @@ function PaneTab({ leafId, sessionId, active }: PaneTabProps): React.ReactElemen
 
 interface PaneLeafProps {
   leaf: LeafNode;
+  onCloseTab: (leafId: string, sessionId: string) => Promise<void>;
+  onClosePane: (leaf: LeafNode) => Promise<void>;
   dropTargetLeafId: string | null;
   onPaneDragStart: (
     leafId: string,
@@ -108,6 +126,8 @@ interface PaneLeafProps {
  */
 export function PaneLeaf({
   leaf,
+  onCloseTab,
+  onClosePane,
   dropTargetLeafId,
   onPaneDragStart,
   onPaneDragOver,
@@ -119,7 +139,6 @@ export function PaneLeaf({
   const setActive = useLayoutStore((s) => s.setActive);
   const toggleLock = useLayoutStore((s) => s.toggleLock);
   const splitPane = useLayoutStore((s) => s.splitPane);
-  const closePane = useLayoutStore((s) => s.closePane);
 
   const nativeConversationId = leaf.activeSessionId
     ? parseNativeConversationTabId(leaf.activeSessionId)
@@ -172,6 +191,7 @@ export function PaneLeaf({
               leafId={leaf.id}
               sessionId={sid}
               active={sid === leaf.activeSessionId}
+              onCloseTab={onCloseTab}
             />
           ))}
         </div>
@@ -198,7 +218,10 @@ export function PaneLeaf({
           <IconButton
             title="关闭此分屏"
             danger
-            onClick={(e) => { e.stopPropagation(); closePane(leaf.id); }}
+            onClick={(e) => {
+              e.stopPropagation();
+              void onClosePane(leaf);
+            }}
           >
             <X {...ICON_DEFAULTS} />
           </IconButton>

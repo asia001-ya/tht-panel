@@ -9,7 +9,7 @@
  */
 import { useState } from "react";
 import { PanelGroup, Panel, PanelResizeHandle } from "react-resizable-panels";
-import type { PaneNode } from "../../api/types";
+import type { LeafNode, PaneNode } from "../../api/types";
 import { useLayoutStore } from "../../store/layoutStore";
 import { PaneLeaf } from "./PaneLeaf";
 
@@ -17,6 +17,8 @@ const PANE_DRAG_TYPE = "application/x-tht-pane";
 
 interface PaneGridRenderContext {
   setRatio: (splitId: string, ratio: number) => void;
+  onCloseTab: (leafId: string, sessionId: string) => Promise<void>;
+  onClosePane: (leaf: LeafNode) => Promise<void>;
   dropTargetLeafId: string | null;
   onPaneDragStart: (
     leafId: string,
@@ -53,6 +55,8 @@ function renderNode(
       <PaneLeaf
         key={node.id}
         leaf={node}
+        onCloseTab={context.onCloseTab}
+        onClosePane={context.onClosePane}
         dropTargetLeafId={context.dropTargetLeafId}
         onPaneDragStart={context.onPaneDragStart}
         onPaneDragOver={context.onPaneDragOver}
@@ -90,11 +94,20 @@ function renderNode(
   );
 }
 
+interface PaneGridProps {
+  onCloseTab: (leafId: string, sessionId: string) => Promise<void>;
+  onClosePane: (leaf: LeafNode) => Promise<void>;
+}
+
 /**
  * 分屏网格根组件：从 layoutStore 读取整棵树并递归渲染。
+ * @param props 由应用层提供的关闭 Tab 与关闭窗格生命周期回调。
  * @returns 分屏区域的 React 元素
  */
-export function PaneGrid(): React.ReactElement {
+export function PaneGrid({
+  onCloseTab,
+  onClosePane,
+}: PaneGridProps): React.ReactElement {
   // 仅订阅需要的字段，避免无关 store 变更触发重渲染
   const tree = useLayoutStore((s) => s.tree);
   const setRatio = useLayoutStore((s) => s.setRatio);
@@ -191,6 +204,8 @@ export function PaneGrid(): React.ReactElement {
     <div className="pane-grid">
       {renderNode(tree, {
         setRatio,
+        onCloseTab,
+        onClosePane,
         dropTargetLeafId,
         onPaneDragStart: handlePaneDragStart,
         onPaneDragOver: handlePaneDragOver,
