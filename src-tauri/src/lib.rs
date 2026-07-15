@@ -69,6 +69,13 @@ pub fn run() {
             commands::session_cmds::managed_session_update,
             commands::session_cmds::managed_session_delete,
             commands::session_cmds::ai_session_detect,
+            commands::task_cmds::task_list,
+            commands::task_cmds::task_create,
+            commands::task_cmds::task_dispatch,
+            commands::task_cmds::task_report,
+            commands::task_cmds::task_forward,
+            commands::task_cmds::task_close,
+            commands::task_cmds::task_cancel,
             native_ai::ai_prompt,
         ])
         .run(tauri::generate_context!())

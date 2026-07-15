@@ -309,6 +309,14 @@ impl PtyManager {
             .collect()
     }
 
+    /// 按标识读取单个会话的当前信息快照。
+    /// 参数：session_id——会话标识；返回：PtySessionInfo 或 AppError。
+    pub fn info(&self, session_id: &str) -> Result<PtySessionInfo, AppError> {
+        let session = self.get(session_id)?;
+        let info = session.lock().info.clone();
+        Ok(info)
+    }
+
     /// attach：原子发送环形缓冲快照并设定 sink（抢占替换旧 sink）。
     /// Channel 有序 ⇒ 后续 Data 必排在 Snapshot 之后，无需序号机制（计划 8.3）。
     /// 参数：session_id——会话 id；channel——输出通道；返回：() 或 AppError。

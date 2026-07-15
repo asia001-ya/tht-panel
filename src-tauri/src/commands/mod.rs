@@ -1,4 +1,4 @@
-//! 命令层聚合模块：声明三个命令子模块并重导出全部命令函数，
+//! 命令层聚合模块：声明各命令子模块并重导出命令函数，
 //! 供 `lib.rs` 的 `tauri::generate_handler!` 统一注册。
 //!
 //! 命令层职责单一：参数搬运 + 转发到 PtyManager / ConfigStore / history，
@@ -8,6 +8,7 @@ pub mod config_cmds;
 pub mod history_cmds;
 pub mod pty_cmds;
 pub mod session_cmds;
+pub mod task_cmds;
 
 use tauri::{Manager, State};
 
@@ -21,6 +22,9 @@ pub use config_cmds::{
 };
 pub use history_cmds::history_list;
 pub use pty_cmds::{pty_attach, pty_detach, pty_kill, pty_list, pty_resize, pty_spawn, pty_write};
+pub use task_cmds::{
+    task_cancel, task_close, task_create, task_dispatch, task_forward, task_list, task_report,
+};
 
 /// 退出应用：杀死全部 PTY 会话（防残留 powershell/node，风险 10）后退出进程。
 ///
