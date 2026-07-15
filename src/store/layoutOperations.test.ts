@@ -3,6 +3,8 @@ import type { PaneNode } from "../api/types";
 import {
   clonePaneTree,
   createSavedWorkspaceSnapshot,
+  renamePane,
+  replaceLeafSession,
   swapLeafContents,
 } from "./layoutOperations";
 
@@ -15,6 +17,7 @@ const tree: PaneNode = {
     {
       type: "leaf",
       id: "left",
+      name: "web",
       sessionIds: ["chat:first"],
       activeSessionId: "chat:first",
       locked: false,
@@ -22,6 +25,7 @@ const tree: PaneNode = {
     {
       type: "leaf",
       id: "right",
+      name: "server",
       sessionIds: ["chat:second", "chat:third"],
       activeSessionId: "chat:third",
       locked: true,
@@ -40,10 +44,12 @@ describe("工作区窗口操作", () => {
     }
 
     expect(left.id).toBe("left");
+    expect(left.name).toBe("web");
     expect(left.locked).toBe(false);
     expect(left.sessionIds).toEqual(["chat:second", "chat:third"]);
     expect(left.activeSessionId).toBe("chat:third");
     expect(right.id).toBe("right");
+    expect(right.name).toBe("server");
     expect(right.locked).toBe(true);
     expect(right.sessionIds).toEqual(["chat:first"]);
     expect(right.activeSessionId).toBe("chat:first");
@@ -93,12 +99,21 @@ describe("工作区窗口操作", () => {
   });
 
   it("保存工作区时复制布局，后续编辑不会污染快照", () => {
+    const sessionRefs = {
+      "chat:first": {
+        managedSessionId: "managed-1",
+        workspaceId: "workspace-1",
+        kind: "claude" as const,
+        mode: "terminal" as const,
+      },
+    };
     const snapshot = createSavedWorkspaceSnapshot({
       id: "saved-1",
       name: "开发布局",
       tree,
       activePaneId: "left",
       createdAt: "2026-07-12T12:00:00.000Z",
+      sessionRefs,
     });
     const swapped = swapLeafContents(tree, "left", "right");
 
@@ -107,5 +122,44 @@ describe("工作区窗口操作", () => {
     expect(snapshot.tree).not.toBe(tree);
     expect(snapshot.tree).not.toEqual(swapped);
     expect(clonePaneTree(snapshot.tree)).toEqual(tree);
+    expect(snapshot.sessionRefs).not.toBe(sessionRefs);
+    sessionRefs["chat:first"].managedSessionId = "managed-2";
+    expect(snapshot.sessionRefs?.["chat:first"]?.managedSessionId).toBe("managed-1");
+  });
+
+  it("窗格名称忽略大小写不可重复", () => {
+    const result = renamePane(tree, "right", " WEB ");
+
+    expect(result.error).toBe("窗格名称已存在");
+    expect(result.tree).toBe(tree);
+  });
+
+  it("空名称清除窗格的显式名称", () => {
+    const result = renamePane(tree, "left", "   ");
+    if (result.tree.type !== "split") throw new Error("测试树必须是 split");
+    const left = result.tree.children[0];
+    if (left.type !== "leaf") throw new Error("左侧节点必须是 leaf");
+
+    expect(result.error).toBeUndefined();
+    expect(left.name).toBeUndefined();
+  });
+
+  it("恢复会话时在原位置替换会话 ID 与活动会话", () => {
+    const replaced = replaceLeafSession(
+      tree,
+      "left",
+      "chat:first",
+      "pty:restored",
+    );
+    if (replaced.type !== "split") throw new Error("测试树必须是 split");
+    const [left, right] = replaced.children;
+    if (left.type !== "leaf" || right.type !== "leaf") {
+      throw new Error("测试子节点必须是 leaf");
+    }
+
+    expect(left.sessionIds).toEqual(["pty:restored"]);
+    expect(left.activeSessionId).toBe("pty:restored");
+    expect(left.name).toBe("web");
+    expect(right).toBe(tree.children[1]);
   });
 });

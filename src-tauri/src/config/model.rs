@@ -201,6 +201,8 @@ pub struct PersistedLayout {
     pub tree: Option<serde_json::Value>,
     /// 活动 pane id
     pub active_pane_id: Option<String>,
+    /// 当前活动的保存工作区 id；旧布局缺失时默认为空。
+    pub active_saved_workspace_id: Option<String>,
     /// 用户命名保存的完整工作区布局；后端只透传。
     pub saved_workspaces: Vec<serde_json::Value>,
     /// 窗口状态 {width,height,maximized}，透传不解析
@@ -215,9 +217,27 @@ impl Default for PersistedLayout {
             version: 1,
             tree: None,
             active_pane_id: None,
+            active_saved_workspace_id: None,
             saved_workspaces: Vec::new(),
             window: None,
         }
+    }
+}
+
+#[cfg(test)]
+mod persisted_layout_tests {
+    use super::PersistedLayout;
+
+    /// 验证旧布局缺少活动保存工作区字段时仍可加载并使用空值。
+    /// 参数：无；返回：无，断言失败时由测试框架报告。
+    #[test]
+    fn defaults_active_saved_workspace_for_legacy_json() {
+        let layout: PersistedLayout = serde_json::from_str(
+            r#"{"version":1,"tree":null,"activePaneId":null,"savedWorkspaces":[]}"#,
+        )
+        .expect("旧布局应可反序列化");
+
+        assert_eq!(layout.active_saved_workspace_id, None);
     }
 }
 

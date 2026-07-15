@@ -67,6 +67,15 @@ export interface GlobalConfig {
 /** 分屏布局二叉树节点 */
 export type PaneNode = SplitNode | LeafNode;
 
+/** 保存工作区中的稳定会话引用，用于重建易失的运行时 Tab。 */
+export interface SavedSessionRef {
+  managedSessionId?: string;
+  workspaceId: string;
+  kind: AgentKind;
+  providerId?: string;
+  mode: "terminal" | "native";
+}
+
 export interface SplitNode {
   type: "split";
   id: string;
@@ -78,6 +87,7 @@ export interface SplitNode {
 export interface LeafNode {
   type: "leaf";
   id: string;
+  name?: string;                    // 属于布局槽位的显式名称
   sessionIds: string[];            // Tab 顺序（先开在前）
   activeSessionId: string | null;  // 当前激活 Tab；null=空占位
   locked: boolean;                 // 锁定：不接受新 Tab
@@ -87,6 +97,7 @@ export interface LeafNode {
 export interface PersistedLeaf {
   type: "leaf";
   id: string;
+  name?: string;
   locked: boolean;
   workspaceId?: string; // 上次绑定的工作空间，重启后点击占位页按此启动
 }
@@ -105,12 +116,14 @@ export interface SavedWorkspaceLayout {
   tree: PaneNode;
   activePaneId: string | null;
   createdAt: string;
+  sessionRefs?: Record<string, SavedSessionRef>;
 }
 
 export interface PersistedLayout {
   version: number;
   tree: PersistedNode | null;
   activePaneId: string | null;
+  activeSavedWorkspaceId?: string;
   savedWorkspaces?: SavedWorkspaceLayout[];
   window?: { width: number; height: number; maximized: boolean };
 }

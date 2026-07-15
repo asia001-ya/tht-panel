@@ -1,7 +1,7 @@
 /**
  * 分屏布局 store：分屏二叉树 + 活动 leaf + 窗格内 Tab。
  * 所有树操作均为纯函数式不可变更新；新节点 id 用 crypto.randomUUID()。
- * 运行时 leaf.sessionIds/activeSessionId 易失（不持久化），持久化只存骨架 {id,locked}。
+ * 运行时 leaf.sessionIds/activeSessionId 易失（不持久化），持久化只存骨架 {id,name?,locked}。
  */
 import { create } from "zustand";
 import type {
@@ -11,12 +11,15 @@ import type {
   PersistedNode,
   PersistedLeaf,
   PersistedSplit,
+  SavedSessionRef,
   SavedWorkspaceLayout,
 } from "../api/types";
 import { layoutGet, layoutSave } from "../api/commands";
 import {
   clonePaneTree,
   createSavedWorkspaceSnapshot,
+  renamePane as renamePaneInTree,
+  replaceLeafSession,
   swapLeafContents,
 } from "./layoutOperations";
 
@@ -24,13 +27,29 @@ let persistTimer: ReturnType<typeof setTimeout> | null = null;
 
 const LAYOUT_VERSION = 1;
 
+/**
+ * 创建一个空的运行时叶子窗格。
+ * @returns 带唯一 ID 的未锁定空窗格。
+ */
 function makeLeaf(): LeafNode {
   return { type: "leaf", id: crypto.randomUUID(), sessionIds: [], activeSessionId: null, locked: false };
 }
 
+/**
+ * 把持久化布局骨架转换为运行时窗格树。
+ * @param node 待转换的持久化节点。
+ * @returns 会话列表为空且保留名称、锁定状态的运行时节点。
+ */
 function toRuntime(node: PersistedNode): PaneNode {
   if (node.type === "leaf") {
-    return { type: "leaf", id: node.id, sessionIds: [], activeSessionId: null, locked: node.locked };
+    return {
+      type: "leaf",
+      id: node.id,
+      name: node.name,
+      sessionIds: [],
+      activeSessionId: null,
+      locked: node.locked,
+    };
   }
   return {
     type: "split",
@@ -41,9 +60,19 @@ function toRuntime(node: PersistedNode): PaneNode {
   };
 }
 
+/**
+ * 把运行时窗格树转换为不包含易失会话 ID 的持久化骨架。
+ * @param node 待转换的运行时节点。
+ * @returns 保留名称、锁定状态和分屏结构的持久化节点。
+ */
 function toPersisted(node: PaneNode): PersistedNode {
   if (node.type === "leaf") {
-    const leaf: PersistedLeaf = { type: "leaf", id: node.id, locked: node.locked };
+    const leaf: PersistedLeaf = {
+      type: "leaf",
+      id: node.id,
+      name: node.name,
+      locked: node.locked,
+    };
     return leaf;
   }
   const split: PersistedSplit = {
@@ -56,7 +85,11 @@ function toPersisted(node: PaneNode): PersistedNode {
   return split;
 }
 
-/** 先序遍历收集所有 leaf 节点 */
+/**
+ * 先序遍历收集所有叶子窗格。
+ * @param node 待遍历的窗格树。
+ * @returns 按布局顺序排列的叶子窗格。
+ */
 export function preorderLeaves(node: PaneNode): LeafNode[] {
   if (node.type === "leaf") return [node];
   return [...preorderLeaves(node.children[0]), ...preorderLeaves(node.children[1])];
@@ -94,7 +127,11 @@ interface LayoutState {
   tree: PaneNode;
   activePaneId: string | null;
   savedWorkspaces: SavedWorkspaceLayout[];
+  restoreErrors: Record<string, string>;
+  activeSavedWorkspaceId: string | null;
+  /** 从后端加载持久化布局；无参数，无返回值。 */
   load: () => Promise<void>;
+  /** 延迟保存当前布局；无参数，无返回值。 */
   persist: () => void;
   splitPane: (leafId: string, direction: "horizontal" | "vertical") => string;
   closePane: (leafId: string) => void;
@@ -112,8 +149,45 @@ interface LayoutState {
   /** 求落点 leaf：优先活动且未锁；否则先序第一个未锁；全锁返回 null */
   findTargetLeaf: () => string | null;
   swapPaneContents: (sourceLeafId: string, targetLeafId: string) => void;
-  saveCurrentWorkspace: (name: string) => void;
-  restoreSavedWorkspace: (savedWorkspaceId: string) => void;
+  /**
+   * 重命名窗格。
+   * @param leafId 目标窗格 ID。
+   * @param name 用户输入的名称。
+   * @returns 重复名称错误文案，成功时返回 null。
+   */
+  renamePane: (leafId: string, name: string) => string | null;
+  /**
+   * 在指定窗格内原位替换恢复后的会话 ID。
+   * @param leafId 目标窗格 ID。
+   * @param oldId 快照中的旧会话 ID。
+   * @param newId 恢复后的新会话 ID。
+   * @returns 无返回值。
+   */
+  replaceSession: (leafId: string, oldId: string, newId: string) => void;
+  /**
+   * 记录或清除指定窗格的会话恢复错误。
+   * @param leafId 目标窗格 ID。
+   * @param message 错误文案；null 表示清除。
+   * @returns 无返回值。
+   */
+  setRestoreError: (leafId: string, message: string | null) => void;
+  /**
+   * 保存当前工作区。
+   * @param name 保存工作区名称。
+   * @param sessionRefs 快照 Tab 对应的稳定会话引用。
+   * @returns 空名称返回 null，否则返回新快照。
+   */
+  saveCurrentWorkspace: (
+    name: string,
+    sessionRefs?: Record<string, SavedSessionRef>,
+  ) => SavedWorkspaceLayout | null;
+  /**
+   * 恢复指定工作区。
+   * @param savedWorkspaceId 保存工作区 ID。
+   * @returns 不存在时返回 null，否则返回对应快照。
+   */
+  restoreSavedWorkspace: (savedWorkspaceId: string) => SavedWorkspaceLayout | null;
+  /** 删除指定的保存工作区；无返回值。 */
   removeSavedWorkspace: (savedWorkspaceId: string) => void;
 }
 
@@ -121,7 +195,10 @@ export const useLayoutStore = create<LayoutState>((set, get) => ({
   tree: makeLeaf(),
   activePaneId: null,
   savedWorkspaces: [],
+  restoreErrors: {},
+  activeSavedWorkspaceId: null,
 
+  /** 从后端加载布局；无参数，返回加载完成的 Promise。 */
   load: async () => {
     const layout = await layoutGet();
     if (!layout.tree) {
@@ -130,6 +207,8 @@ export const useLayoutStore = create<LayoutState>((set, get) => ({
         tree: leaf,
         activePaneId: leaf.id,
         savedWorkspaces: layout.savedWorkspaces ?? [],
+        restoreErrors: {},
+        activeSavedWorkspaceId: layout.activeSavedWorkspaceId ?? null,
       });
       return;
     }
@@ -143,18 +222,22 @@ export const useLayoutStore = create<LayoutState>((set, get) => ({
       tree,
       activePaneId: active,
       savedWorkspaces: layout.savedWorkspaces ?? [],
+      restoreErrors: {},
+      activeSavedWorkspaceId: layout.activeSavedWorkspaceId ?? null,
     });
   },
 
+  /** 延迟持久化当前布局；无参数，无返回值。 */
   persist: () => {
     if (persistTimer !== null) clearTimeout(persistTimer);
     persistTimer = setTimeout(() => {
       persistTimer = null;
-      const { tree, activePaneId, savedWorkspaces } = get();
+      const { tree, activePaneId, activeSavedWorkspaceId, savedWorkspaces } = get();
       void layoutSave({
         version: LAYOUT_VERSION,
         tree: toPersisted(tree),
         activePaneId,
+        activeSavedWorkspaceId: activeSavedWorkspaceId ?? undefined,
         savedWorkspaces,
       });
     }, 300);
@@ -285,9 +368,42 @@ export const useLayoutStore = create<LayoutState>((set, get) => ({
     get().persist();
   },
 
-  saveCurrentWorkspace: (name) => {
+  /** 重命名窗格；参数为窗格 ID 与名称，返回错误文案或 null。 */
+  renamePane: (leafId, name) => {
+    const currentTree = get().tree;
+    const result = renamePaneInTree(currentTree, leafId, name);
+    if (result.error) return result.error;
+    if (result.tree !== currentTree) {
+      set({ tree: result.tree });
+      get().persist();
+    }
+    return null;
+  },
+
+  /** 原位替换会话 ID；参数为窗格 ID、旧 ID 与新 ID，无返回值。 */
+  replaceSession: (leafId, oldId, newId) => {
+    const currentTree = get().tree;
+    const tree = replaceLeafSession(currentTree, leafId, oldId, newId);
+    if (tree !== currentTree) set({ tree });
+  },
+
+  /** 设置恢复错误；参数为窗格 ID 与可空错误文案，无返回值。 */
+  setRestoreError: (leafId, message) => {
+    set((state) => {
+      const restoreErrors = { ...state.restoreErrors };
+      if (message === null) {
+        delete restoreErrors[leafId];
+      } else {
+        restoreErrors[leafId] = message;
+      }
+      return { restoreErrors };
+    });
+  },
+
+  /** 保存当前工作区；参数为名称和可选会话引用，返回新快照或 null。 */
+  saveCurrentWorkspace: (name, sessionRefs) => {
     const trimmed = name.trim();
-    if (!trimmed) return;
+    if (!trimmed) return null;
     const { tree, activePaneId, savedWorkspaces } = get();
     const snapshot = createSavedWorkspaceSnapshot({
       id: crypto.randomUUID(),
@@ -295,16 +411,28 @@ export const useLayoutStore = create<LayoutState>((set, get) => ({
       tree,
       activePaneId,
       createdAt: new Date().toISOString(),
+      sessionRefs,
     });
-    set({ savedWorkspaces: [...savedWorkspaces, snapshot] });
+    set({
+      savedWorkspaces: [...savedWorkspaces, snapshot],
+      activeSavedWorkspaceId: snapshot.id,
+    });
     get().persist();
+    return snapshot;
   },
 
+  /** 恢复保存工作区；参数为快照 ID，返回对应快照或 null。 */
   restoreSavedWorkspace: (savedWorkspaceId) => {
     const saved = get().savedWorkspaces.find((item) => item.id === savedWorkspaceId);
-    if (!saved) return;
-    set({ tree: clonePaneTree(saved.tree), activePaneId: saved.activePaneId });
+    if (!saved) return null;
+    set({
+      tree: clonePaneTree(saved.tree),
+      activePaneId: saved.activePaneId,
+      activeSavedWorkspaceId: saved.id,
+      restoreErrors: {},
+    });
     get().persist();
+    return saved;
   },
 
   removeSavedWorkspace: (savedWorkspaceId) => {
