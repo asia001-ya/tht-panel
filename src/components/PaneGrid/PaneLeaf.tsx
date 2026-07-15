@@ -1,8 +1,9 @@
 /**
  * PaneLeaf：单个分屏叶子的渲染单元。
- * 标题栏：项目名 + Tab 条（每 Tab 状态点+会话名+关闭） + 操作按钮组。
+ * 标题栏：拖动句柄 + Tab 条（每 Tab 状态点+会话名+关闭） + 窗格操作区。
  * 主体渲染当前激活 Tab 的 TerminalPane（或空占位提示）。
  */
+import { useState } from "react";
 import type { LeafNode, SessionState } from "../../api/types";
 import { useLayoutStore } from "../../store/layoutStore";
 import { useSessionStore } from "../../store/sessionStore";
@@ -146,6 +147,10 @@ export function PaneLeaf({
   const setActive = useLayoutStore((s) => s.setActive);
   const toggleLock = useLayoutStore((s) => s.toggleLock);
   const splitPane = useLayoutStore((s) => s.splitPane);
+  const renamePane = useLayoutStore((s) => s.renamePane);
+  const [editing, setEditing] = useState(false);
+  const [draftName, setDraftName] = useState("");
+  const [nameError, setNameError] = useState<string | null>(null);
 
   const nativeConversationId = leaf.activeSessionId
     ? parseNativeConversationTabId(leaf.activeSessionId)
@@ -163,11 +168,26 @@ export function PaneLeaf({
   });
   const wsId = nativeWorkspaceId ?? terminalWorkspaceId;
   const wsName = useWorkspaceStore((s) =>
-    wsId ? (s.workspaces.find((w) => w.id === wsId)?.name ?? "") : "",
+    wsId ? s.workspaces.find((w) => w.id === wsId)?.name : undefined,
   );
 
   const isActive = activePaneId === leaf.id;
   const isDropTarget = dropTargetLeafId === leaf.id;
+  const displayName = leaf.name ?? wsName ?? "未命名";
+
+  /**
+   * 保存当前名称草稿；名称重复时保留编辑态并展示 store 返回的错误。
+   * @returns 无返回值。
+   */
+  const saveName = (): void => {
+    const error = renamePane(leaf.id, draftName);
+    if (error) {
+      setNameError(error);
+      return;
+    }
+    setNameError(null);
+    setEditing(false);
+  };
 
   return (
     <div
@@ -187,10 +207,6 @@ export function PaneLeaf({
         >
           <GripVertical size={14} strokeWidth={1.5} />
         </span>
-        <span className="pane-ws-name" title={wsName || "空"}>
-          {wsName || "空"}
-        </span>
-
         <div className="pane-tabs">
           {leaf.sessionIds.map((sid) => (
             <PaneTab
@@ -205,6 +221,52 @@ export function PaneLeaf({
         </div>
 
         <div className="pane-actions">
+          {editing ? (
+            <div className="pane-name-editor">
+              <input
+                autoFocus
+                aria-label="窗格名称"
+                className={`pane-name-input${nameError ? " pane-name-input-error" : ""}`}
+                value={draftName}
+                onChange={(event) => {
+                  setDraftName(event.target.value);
+                  setNameError(null);
+                }}
+                onBlur={saveName}
+                onClick={(event) => event.stopPropagation()}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter") {
+                    event.preventDefault();
+                    event.stopPropagation();
+                    saveName();
+                  } else if (event.key === "Escape") {
+                    event.preventDefault();
+                    event.stopPropagation();
+                    setNameError(null);
+                    setEditing(false);
+                  }
+                }}
+              />
+              {nameError && (
+                <span className="pane-name-error" role="alert">
+                  {nameError}
+                </span>
+              )}
+            </div>
+          ) : (
+            <span
+              className="pane-name"
+              title={displayName}
+              onDoubleClick={(event) => {
+                event.stopPropagation();
+                setDraftName(leaf.name ?? wsName ?? "");
+                setNameError(null);
+                setEditing(true);
+              }}
+            >
+              {displayName}
+            </span>
+          )}
           <IconButton
             title={leaf.locked ? "已锁定：点击解锁" : "未锁定：点击锁定"}
             onClick={(e) => { e.stopPropagation(); toggleLock(leaf.id); }}

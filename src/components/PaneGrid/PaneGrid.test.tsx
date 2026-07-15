@@ -4,6 +4,8 @@ import type { ReactNode } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { LeafNode, PaneNode } from "../../api/types";
 import { preorderLeaves, useLayoutStore } from "../../store/layoutStore";
+import { useSessionStore } from "../../store/sessionStore";
+import { useWorkspaceStore } from "../../store/workspaceStore";
 import { PaneGrid } from "./PaneGrid";
 
 const PANE_DRAG_TYPE = "application/x-tht-pane";
@@ -96,9 +98,11 @@ const originalSwapPaneContents = useLayoutStore.getState().swapPaneContents;
 
 /**
  * 创建每个用例独立的双叶布局。
- * @returns 包含左右两个空叶子的分屏树。
+ * @param leftName 左侧窗格显式名称。
+ * @param rightName 右侧窗格显式名称。
+ * @returns 包含左右两个叶子的分屏树。
  */
-function createTestTree(): PaneNode {
+function createTestTree(leftName?: string, rightName?: string): PaneNode {
   return {
     type: "split",
     id: "split-root",
@@ -108,6 +112,7 @@ function createTestTree(): PaneNode {
       {
         type: "leaf",
         id: "leaf-left",
+        name: leftName,
         sessionIds: ["pty-left-1", "pty-left-2"],
         activeSessionId: "pty-left-1",
         locked: false,
@@ -115,6 +120,7 @@ function createTestTree(): PaneNode {
       {
         type: "leaf",
         id: "leaf-right",
+        name: rightName,
         sessionIds: [],
         activeSessionId: null,
         locked: true,
@@ -187,6 +193,17 @@ function createCloseCallbacks(): CloseCallbacks {
 }
 
 /**
+ * 读取指定窗格当前的显式名称。
+ * @param leafId 目标窗格 ID。
+ * @returns 显式名称；未命名时返回 undefined。
+ */
+function getPaneName(leafId: string): string | undefined {
+  return preorderLeaves(useLayoutStore.getState().tree).find(
+    (leaf) => leaf.id === leafId,
+  )?.name;
+}
+
+/**
  * 渲染真实布局 store 驱动的 PaneGrid，并返回拖放所需节点。
  * @param callbacks 关闭 Tab 与窗格的异步回调。
  * @returns 源拖动句柄、源叶子和目标叶子。
@@ -242,6 +259,130 @@ beforeEach(() => {
     persist: vi.fn(),
     setRatio: originalSetRatio,
     swapPaneContents: originalSwapPaneContents,
+  });
+  useSessionStore.setState({
+    sessions: {
+      "pty-left-1": {
+        sessionId: "pty-left-1",
+        workspaceId: "workspace-panel",
+        kind: "shell",
+        cwd: "D:\\AI\\panel",
+        title: "左侧会话",
+        state: "idle",
+        createdAt: "2026-07-15T00:00:00.000Z",
+      },
+      "pty-left-2": {
+        sessionId: "pty-left-2",
+        workspaceId: null,
+        kind: "shell",
+        cwd: "D:\\AI\\panel",
+        title: "备用会话",
+        state: "idle",
+        createdAt: "2026-07-15T00:01:00.000Z",
+      },
+    },
+  });
+  useWorkspaceStore.setState({
+    workspaces: [
+      {
+        id: "workspace-panel",
+        name: "Panel",
+        path: "D:\\AI\\panel",
+        agent: "codex",
+        useGlobalConfig: true,
+        sortOrder: 0,
+        createdAt: "2026-07-15T00:00:00.000Z",
+      },
+    ],
+    historyCache: {},
+  });
+});
+
+describe("PaneGrid 窗格名称", () => {
+  it("无显式名称时依次回退到活动会话项目名和未命名", () => {
+    renderPaneGrid();
+
+    expect(screen.getByText("Panel")).toBeTruthy();
+    expect(screen.getByText("未命名")).toBeTruthy();
+  });
+
+  it("显式名称优先显示且名称节点位于操作区锁定按钮左侧", () => {
+    useLayoutStore.setState({ tree: createTestTree("前端窗格") });
+    renderPaneGrid();
+
+    const name = screen.getByText("前端窗格");
+    const actions = name.closest(".pane-actions");
+    const lockButton = screen.getByTitle("未锁定：点击锁定");
+    expect(actions).not.toBeNull();
+    expect(actions?.contains(lockButton)).toBe(true);
+    expect(
+      name.compareDocumentPosition(lockButton) &
+        Node.DOCUMENT_POSITION_FOLLOWING,
+    ).not.toBe(0);
+  });
+
+  it("双击名称后按 Enter 保存新名称", () => {
+    renderPaneGrid();
+
+    fireEvent.doubleClick(screen.getByText("Panel"));
+    const input = screen.getByRole("textbox", { name: "窗格名称" });
+    fireEvent.change(input, { target: { value: "server" } });
+    fireEvent.keyDown(input, { key: "Enter" });
+
+    expect(getPaneName("leaf-left")).toBe("server");
+    expect(screen.queryByRole("textbox", { name: "窗格名称" })).toBeNull();
+  });
+
+  it("按 Escape 取消名称修改", () => {
+    renderPaneGrid();
+
+    fireEvent.doubleClick(screen.getByText("Panel"));
+    const input = screen.getByRole("textbox", { name: "窗格名称" });
+    fireEvent.change(input, { target: { value: "server" } });
+    fireEvent.keyDown(input, { key: "Escape" });
+
+    expect(getPaneName("leaf-left")).toBeUndefined();
+    expect(screen.getByText("Panel")).toBeTruthy();
+  });
+
+  it("输入框失焦时保存名称", () => {
+    renderPaneGrid();
+
+    fireEvent.doubleClick(screen.getByText("Panel"));
+    const input = screen.getByRole("textbox", { name: "窗格名称" });
+    fireEvent.change(input, { target: { value: "server" } });
+    fireEvent.blur(input);
+
+    expect(getPaneName("leaf-left")).toBe("server");
+  });
+
+  it("空名称调用 store 清除显式名并回退项目名", () => {
+    useLayoutStore.setState({ tree: createTestTree("前端窗格") });
+    const renamePane = vi.spyOn(useLayoutStore.getState(), "renamePane");
+    renderPaneGrid();
+
+    fireEvent.doubleClick(screen.getByText("前端窗格"));
+    const input = screen.getByRole("textbox", { name: "窗格名称" });
+    fireEvent.change(input, { target: { value: "   " } });
+    fireEvent.keyDown(input, { key: "Enter" });
+
+    expect(renamePane).toHaveBeenCalledWith("leaf-left", "   ");
+    expect(getPaneName("leaf-left")).toBeUndefined();
+    expect(screen.getByText("Panel")).toBeTruthy();
+  });
+
+  it("忽略大小写的重复名称原位报错并保持编辑", () => {
+    useLayoutStore.setState({ tree: createTestTree("前端窗格", "Server") });
+    renderPaneGrid();
+
+    fireEvent.doubleClick(screen.getByText("前端窗格"));
+    const input = screen.getByRole("textbox", { name: "窗格名称" });
+    fireEvent.change(input, { target: { value: "server" } });
+    fireEvent.keyDown(input, { key: "Enter" });
+
+    expect(screen.getByRole("alert").textContent).toBe("窗格名称已存在");
+    expect(screen.getByRole("textbox", { name: "窗格名称" })).toBe(input);
+    expect(getPaneName("leaf-left")).toBe("前端窗格");
   });
 });
 

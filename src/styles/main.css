@@ -128,18 +128,6 @@
   color: var(--fg);
 }
 
-/* 项目名标签 */
-.pane-ws-name {
-  flex: 0 0 auto;
-  max-width: 120px;
-  font-size: 12px;
-  font-weight: 500;
-  color: var(--fg-faint);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
 /* Tab 条 */
 .pane-tabs {
   flex: 1 1 auto;
@@ -242,8 +230,58 @@
 
 .pane-actions {
   display: flex;
+  align-items: center;
   gap: 2px;
   flex: 0 0 auto;
+}
+
+.pane-name {
+  max-width: 120px;
+  padding: 0 4px;
+  overflow: hidden;
+  color: var(--fg-faint);
+  font-size: 12px;
+  font-weight: 500;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  cursor: text;
+  user-select: none;
+}
+
+.pane-name-editor {
+  position: relative;
+  width: 120px;
+}
+
+.pane-name-input {
+  width: 100%;
+  height: 22px;
+  padding: 2px 6px;
+  background: var(--panel-2);
+  color: var(--fg);
+  border: 1px solid var(--fg);
+  border-radius: 4px;
+  font-family: inherit;
+  font-size: 12px;
+  outline: none;
+}
+
+.pane-name-input-error {
+  border-color: var(--danger);
+}
+
+.pane-name-error {
+  position: absolute;
+  top: 24px;
+  right: 0;
+  z-index: 2;
+  padding: 3px 6px;
+  background: var(--panel-2);
+  color: var(--danger);
+  border: 1px solid var(--danger);
+  border-radius: 4px;
+  font-size: 11px;
+  white-space: nowrap;
 }
 
 .pane-body {
