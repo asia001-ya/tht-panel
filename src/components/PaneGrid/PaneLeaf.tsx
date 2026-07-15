@@ -27,6 +27,7 @@ interface PaneTabProps {
   leafId: string;
   sessionId: string;
   active: boolean;
+  closing: boolean;
   onCloseTab: (leafId: string, sessionId: string) => Promise<void>;
 }
 
@@ -39,6 +40,7 @@ function PaneTab({
   leafId,
   sessionId,
   active,
+  closing,
   onCloseTab,
 }: PaneTabProps): React.ReactElement {
   const activateTab = useLayoutStore((s) => s.activateTab);
@@ -72,7 +74,7 @@ function PaneTab({
         activateTab(leafId, sessionId);
       }}
       onAuxClick={(e) => {
-        if (e.button === 1) {
+        if (e.button === 1 && !closing) {
           e.stopPropagation();
           void onCloseTab(leafId, sessionId);
         }
@@ -82,9 +84,10 @@ function PaneTab({
       <span className="pane-tab-label">{label}</span>
       <span
         className="pane-tab-close"
+        aria-disabled={closing}
         onClick={(e) => {
           e.stopPropagation();
-          void onCloseTab(leafId, sessionId);
+          if (!closing) void onCloseTab(leafId, sessionId);
         }}
       >
         ×
@@ -99,6 +102,8 @@ interface PaneLeafProps {
   leaf: LeafNode;
   onCloseTab: (leafId: string, sessionId: string) => Promise<void>;
   onClosePane: (leaf: LeafNode) => Promise<void>;
+  closingSessionIds: ReadonlySet<string>;
+  closingPaneIds: ReadonlySet<string>;
   dropTargetLeafId: string | null;
   onPaneDragStart: (
     leafId: string,
@@ -128,6 +133,8 @@ export function PaneLeaf({
   leaf,
   onCloseTab,
   onClosePane,
+  closingSessionIds,
+  closingPaneIds,
   dropTargetLeafId,
   onPaneDragStart,
   onPaneDragOver,
@@ -191,6 +198,7 @@ export function PaneLeaf({
               leafId={leaf.id}
               sessionId={sid}
               active={sid === leaf.activeSessionId}
+              closing={closingSessionIds.has(sid) || closingPaneIds.has(leaf.id)}
               onCloseTab={onCloseTab}
             />
           ))}
@@ -218,6 +226,7 @@ export function PaneLeaf({
           <IconButton
             title="关闭此分屏"
             danger
+            disabled={closingPaneIds.has(leaf.id)}
             onClick={(e) => {
               e.stopPropagation();
               void onClosePane(leaf);

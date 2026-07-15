@@ -21,6 +21,9 @@ const commandMocks = vi.hoisted(() => ({
   aiSessionDetect: vi.fn(async () => null),
   appQuit: vi.fn(async () => undefined),
   managedSessionCreate: vi.fn(async () => undefined),
+  managedSessionList: vi.fn(
+    async (_workspaceId: string): Promise<ManagedSession[]> => [],
+  ),
   managedSessionUpdate: vi.fn(
     async (_session: ManagedSession): Promise<void> => undefined,
   ),
@@ -54,14 +57,23 @@ vi.mock("./components/PaneGrid/PaneGrid", () => ({
   PaneGrid: ({
     onCloseTab,
     onClosePane,
+    closingSessionIds = new Set<string>(),
+    closingPaneIds = new Set<string>(),
   }: {
     onCloseTab?: (leafId: string, sessionId: string) => Promise<void>;
     onClosePane?: (leaf: LeafNode) => Promise<void>;
+    closingSessionIds?: ReadonlySet<string>;
+    closingPaneIds?: ReadonlySet<string>;
   }) => (
     <section>
       <button
         type="button"
-        onClick={() => void onCloseTab?.("leaf-1", "pty-1")}
+        aria-disabled={closingSessionIds.has("pty-1")}
+        onClick={() => {
+          if (!closingSessionIds.has("pty-1")) {
+            void onCloseTab?.("leaf-1", "pty-1");
+          }
+        }}
       >
         关闭终端 Tab
       </button>
@@ -73,6 +85,7 @@ vi.mock("./components/PaneGrid/PaneGrid", () => ({
       </button>
       <button
         type="button"
+        disabled={closingPaneIds.has("leaf-1")}
         onClick={() => void onClosePane?.({
           type: "leaf",
           id: "leaf-1",
@@ -293,6 +306,11 @@ beforeEach(() => {
     async (_request: SpawnRequest): Promise<PtySessionInfo> => spawnedSession,
   );
   commandMocks.ptyKill.mockResolvedValue(undefined);
+  commandMocks.managedSessionList.mockResolvedValue([
+    managedTerminalOne,
+    legacyNativeSession,
+    managedTerminalTwo,
+  ]);
   commandMocks.managedSessionUpdate.mockResolvedValue(undefined);
   useSettingsStore.setState({
     config,
@@ -332,6 +350,7 @@ beforeEach(() => {
         createdAt: "2026-07-13T08:05:00.000Z",
       },
     ],
+    activeSavedWorkspaceId: null,
     load: vi.fn(async () => undefined),
     persist: vi.fn(),
   });
@@ -432,8 +451,115 @@ describe("App 会话编排", () => {
 });
 
 describe("App 关闭会话生命周期", () => {
+  it("历史缓存缺失但后端仍有绑定时也会解绑并严格刷新缓存", async () => {
+    const refreshedSession = {
+      ...managedTerminalOne,
+      ptySessionId: undefined,
+      updatedAt: "2026-07-13T08:06:00.000Z",
+    };
+    pendingSessions.delete("pty-1");
+    useWorkspaceStore.setState({ historyCache: {} });
+    commandMocks.managedSessionList
+      .mockResolvedValueOnce([managedTerminalOne])
+      .mockResolvedValueOnce([refreshedSession]);
+    renderApp();
+
+    fireEvent.click(screen.getByRole("button", { name: "关闭终端 Tab" }));
+
+    await waitFor(() => expect(commandMocks.managedSessionList).toHaveBeenCalledTimes(2));
+    expect(commandMocks.managedSessionList).toHaveBeenNthCalledWith(1, workspace.id);
+    expect(commandMocks.managedSessionUpdate).toHaveBeenCalledWith({
+      ...managedTerminalOne,
+      ptySessionId: undefined,
+      updatedAt: expect.any(String),
+    });
+    expect(useWorkspaceStore.getState().historyCache[workspace.id]).toEqual([
+      refreshedSession,
+    ]);
+  });
+
+  it("Tab 与窗格交叉重复关闭同一终端时只执行一次底层释放", async () => {
+    let resolveKill: (() => void) | undefined;
+    commandMocks.ptyKill.mockImplementationOnce(
+      () => new Promise<void>((resolve) => {
+        resolveKill = resolve;
+      }),
+    );
+    renderApp();
+
+    const closeTabButton = screen.getByRole("button", { name: "关闭终端 Tab" });
+    fireEvent.click(closeTabButton);
+    await waitFor(() => expect(closeTabButton.getAttribute("aria-disabled")).toBe("true"));
+    fireEvent.click(closeTabButton);
+    fireEvent.click(screen.getByRole("button", { name: "关闭窗格" }));
+    await waitFor(() => {
+      expect(
+        (screen.getByRole("button", { name: "关闭窗格" }) as HTMLButtonElement)
+          .disabled,
+      ).toBe(true);
+    });
+
+    await waitFor(() => expect(commandMocks.ptyKill).toHaveBeenCalled());
+    expect(
+      commandMocks.ptyKill.mock.calls.filter(([sessionId]) => sessionId === "pty-1"),
+    ).toHaveLength(1);
+
+    await act(async () => resolveKill?.());
+    await waitFor(() => expect(commandMocks.ptyKill).toHaveBeenCalledWith("pty-2"));
+    expect(
+      commandMocks.managedSessionUpdate.mock.calls.filter(
+        ([session]) => session.id === managedTerminalOne.id,
+      ),
+    ).toHaveLength(1);
+  });
+
+  it("严格刷新历史失败时仍移除已终止 Tab 并显示同步错误", async () => {
+    commandMocks.managedSessionList.mockRejectedValueOnce(new Error("严格刷新失败"));
+    renderApp();
+
+    fireEvent.click(screen.getByRole("button", { name: "关闭终端 Tab" }));
+
+    await waitFor(() => {
+      const targetLeaf = preorderLeaves(useLayoutStore.getState().tree).find(
+        (item) => item.id === "leaf-1",
+      );
+      expect(targetLeaf?.sessionIds).not.toContain("pty-1");
+    });
+    expect(useSessionStore.getState().sessions["pty-1"]).toBeUndefined();
+    expect(screen.getByText("终端已关闭，但历史同步失败：严格刷新失败")).toBeTruthy();
+  });
+
+  it("关闭 Tab 期间窗格内容交换时按会话当前落点移除已终止视图", async () => {
+    let resolveKill: (() => void) | undefined;
+    commandMocks.ptyKill.mockImplementationOnce(
+      () => new Promise<void>((resolve) => {
+        resolveKill = resolve;
+      }),
+    );
+    renderApp();
+
+    fireEvent.click(screen.getByRole("button", { name: "关闭终端 Tab" }));
+    await waitFor(() => expect(commandMocks.ptyKill).toHaveBeenCalledWith("pty-1"));
+    act(() => {
+      useLayoutStore.getState().swapPaneContents("leaf-1", "leaf-2");
+    });
+    await act(async () => resolveKill?.());
+
+    await waitFor(() => {
+      const currentLeafId = useLayoutStore.getState().findLeafBySession("pty-1");
+      expect(currentLeafId).toBeNull();
+    });
+    expect(useLayoutStore.getState().findLeafBySession("pty-2")).toBe("leaf-2");
+  });
+
   it("关闭终端 Tab 后清理运行态、挂起态和历史绑定再关闭布局 Tab", async () => {
     const loadHistory = vi.mocked(useWorkspaceStore.getState().loadHistory);
+    const refreshedEntries = [
+      { ...managedTerminalOne, ptySessionId: undefined },
+      legacyNativeSession,
+      managedTerminalTwo,
+    ];
+    commandMocks.managedSessionList.mockResolvedValueOnce(refreshedEntries);
     renderApp();
 
     fireEvent.click(screen.getByRole("button", { name: "关闭终端 Tab" }));
@@ -454,7 +580,11 @@ describe("App 关闭会话生命周期", () => {
     });
     const updatedEntry = commandMocks.managedSessionUpdate.mock.calls[0][0];
     expect(Object.prototype.hasOwnProperty.call(updatedEntry, "ptySessionId")).toBe(true);
-    expect(loadHistory).toHaveBeenCalledWith(workspace.id);
+    expect(commandMocks.managedSessionList).toHaveBeenCalledWith(workspace.id);
+    expect(loadHistory).not.toHaveBeenCalled();
+    expect(useWorkspaceStore.getState().historyCache[workspace.id]).toEqual(
+      refreshedEntries,
+    );
   });
 
   it("关闭原生 Tab 只移除视图且不终止任何 PTY", async () => {
@@ -503,6 +633,91 @@ describe("App 关闭会话生命周期", () => {
     expect(useSessionStore.getState().sessions["pty-2"]).toBeUndefined();
     expect(pendingSessions.has("pty-1")).toBe(false);
     expect(pendingSessions.has("pty-2")).toBe(false);
+  });
+
+  it("释放期间新增 Tab 时保留变化后的窗格并按当前落点移除已终止 Tab", async () => {
+    let resolveFirst: (() => void) | undefined;
+    commandMocks.ptyKill.mockImplementation((sessionId: string) => {
+      if (sessionId !== "pty-1") return Promise.resolve();
+      return new Promise<void>((resolve) => {
+        resolveFirst = resolve;
+      });
+    });
+    renderApp();
+
+    fireEvent.click(screen.getByRole("button", { name: "关闭窗格" }));
+    await waitFor(() => expect(commandMocks.ptyKill).toHaveBeenCalledWith("pty-1"));
+    act(() => {
+      useLayoutStore.getState().openSessionInLeaf("leaf-1", "native:new-during-close");
+    });
+    await act(async () => resolveFirst?.());
+
+    await waitFor(() => {
+      const targetLeaf = preorderLeaves(useLayoutStore.getState().tree).find(
+        (item) => item.id === "leaf-1",
+      );
+      expect(targetLeaf?.sessionIds).toEqual([
+        "native:legacy-native-1",
+        "native:new-during-close",
+      ]);
+    });
+    expect(useLayoutStore.getState().tree.type).toBe("split");
+    expect(screen.getByText(/窗格内容已变化/)).toBeTruthy();
+  });
+
+  it("释放期间切换保存工作区时不关闭新布局中的同 ID 窗格", async () => {
+    let resolveFirst: (() => void) | undefined;
+    commandMocks.ptyKill.mockImplementation((sessionId: string) => {
+      if (sessionId !== "pty-1") return Promise.resolve();
+      return new Promise<void>((resolve) => {
+        resolveFirst = resolve;
+      });
+    });
+    useLayoutStore.setState({
+      savedWorkspaces: [
+        {
+          id: "saved-layout",
+          name: "切换后布局",
+          tree: {
+            type: "split",
+            id: "restored-split",
+            direction: "vertical",
+            ratio: 0.4,
+            children: [
+              {
+                type: "leaf",
+                id: "leaf-1",
+                sessionIds: ["native:restored-tab"],
+                activeSessionId: "native:restored-tab",
+                locked: false,
+              },
+              {
+                type: "leaf",
+                id: "restored-leaf",
+                sessionIds: [],
+                activeSessionId: null,
+                locked: false,
+              },
+            ],
+          },
+          activePaneId: "leaf-1",
+          createdAt: "2026-07-13T08:05:00.000Z",
+        },
+      ],
+    });
+    renderApp();
+
+    fireEvent.click(screen.getByRole("button", { name: "关闭窗格" }));
+    await waitFor(() => expect(commandMocks.ptyKill).toHaveBeenCalledWith("pty-1"));
+    fireEvent.click(screen.getByRole("button", { name: "恢复保存工作区" }));
+    await act(async () => resolveFirst?.());
+
+    await waitFor(() => expect(useLayoutStore.getState().tree.id).toBe("restored-split"));
+    const restoredLeaf = preorderLeaves(useLayoutStore.getState().tree).find(
+      (item) => item.id === "leaf-1",
+    );
+    expect(restoredLeaf?.sessionIds).toEqual(["native:restored-tab"]);
+    expect(screen.getByText(/窗格内容已变化/)).toBeTruthy();
   });
 
   it("唯一根窗格释放成功后清空全部 Tab", async () => {

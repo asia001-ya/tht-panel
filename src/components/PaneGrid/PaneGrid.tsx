@@ -19,6 +19,8 @@ interface PaneGridRenderContext {
   setRatio: (splitId: string, ratio: number) => void;
   onCloseTab: (leafId: string, sessionId: string) => Promise<void>;
   onClosePane: (leaf: LeafNode) => Promise<void>;
+  closingSessionIds: ReadonlySet<string>;
+  closingPaneIds: ReadonlySet<string>;
   dropTargetLeafId: string | null;
   onPaneDragStart: (
     leafId: string,
@@ -57,6 +59,8 @@ function renderNode(
         leaf={node}
         onCloseTab={context.onCloseTab}
         onClosePane={context.onClosePane}
+        closingSessionIds={context.closingSessionIds}
+        closingPaneIds={context.closingPaneIds}
         dropTargetLeafId={context.dropTargetLeafId}
         onPaneDragStart={context.onPaneDragStart}
         onPaneDragOver={context.onPaneDragOver}
@@ -97,6 +101,8 @@ function renderNode(
 interface PaneGridProps {
   onCloseTab: (leafId: string, sessionId: string) => Promise<void>;
   onClosePane: (leaf: LeafNode) => Promise<void>;
+  closingSessionIds: ReadonlySet<string>;
+  closingPaneIds: ReadonlySet<string>;
 }
 
 /**
@@ -107,6 +113,8 @@ interface PaneGridProps {
 export function PaneGrid({
   onCloseTab,
   onClosePane,
+  closingSessionIds,
+  closingPaneIds,
 }: PaneGridProps): React.ReactElement {
   // 仅订阅需要的字段，避免无关 store 变更触发重渲染
   const tree = useLayoutStore((s) => s.tree);
@@ -206,6 +214,8 @@ export function PaneGrid({
         setRatio,
         onCloseTab,
         onClosePane,
+        closingSessionIds,
+        closingPaneIds,
         dropTargetLeafId,
         onPaneDragStart: handlePaneDragStart,
         onPaneDragOver: handlePaneDragOver,

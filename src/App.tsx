@@ -9,7 +9,7 @@
  *  ④ 自动分屏（splitPane）→ 新 leaf 追加 Tab；全锁时 toast 提示
  * PTY 生命周期在 Rust，前端切换仅改 leaf.activeSessionId（TerminalPane 负责 attach/回放）。
  */
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { Sidebar } from "./components/Sidebar/Sidebar";
 import { PaneGrid } from "./components/PaneGrid/PaneGrid";
 import { PanelLeftClose, PanelLeftOpen } from "./components/ui/icons";
@@ -23,7 +23,15 @@ import { useWorkspaceStore } from "./store/workspaceStore";
 import { useLayoutStore, preorderLeaves } from "./store/layoutStore";
 import { useSessionStore } from "./store/sessionStore";
 import { useUiStore } from "./store/uiStore";
-import { ptySpawn, ptyKill, appQuit, managedSessionCreate, managedSessionUpdate, aiSessionDetect } from "./api/commands";
+import {
+  ptySpawn,
+  ptyKill,
+  appQuit,
+  managedSessionList,
+  managedSessionCreate,
+  managedSessionUpdate,
+  aiSessionDetect,
+} from "./api/commands";
 import { onSessionState, onSessionExit, onQuitRequest } from "./api/events";
 import type { LeafNode, ManagedSession, SpawnRequest } from "./api/types";
 import {
@@ -59,15 +67,39 @@ type TerminalReleaseResult =
   | { status: "released" }
   | { status: "kill-failed"; error: unknown }
   | { status: "history-failed"; error: unknown };
+const terminalReleasePromises = new Map<
+  string,
+  Promise<TerminalReleaseResult>
+>();
 
 /**
- * 释放一个终端会话，并清理前端镜像与 ManagedSession 的运行时绑定。
+ * 用指定后端结果覆盖工作空间历史缓存。
+ * @param workspaceId 目标工作空间 ID。
+ * @param sessions 后端返回的完整 ManagedSession 列表。
+ * @returns 无返回值。
+ */
+function replaceHistoryCache(
+  workspaceId: string,
+  sessions: ManagedSession[],
+): void {
+  useWorkspaceStore.setState((state) => ({
+    historyCache: {
+      ...state.historyCache,
+      [workspaceId]: sessions,
+    },
+  }));
+}
+
+/**
+ * 执行一次终端释放，并清理前端镜像与 ManagedSession 的运行时绑定。
  * @param sessionId 待释放的 PTY 会话 ID。
  * @returns 释放结果；区分终止失败与终止后历史同步失败。
  */
-async function releaseTerminalSession(
+async function releaseTerminalSessionOnce(
   sessionId: string,
 ): Promise<TerminalReleaseResult> {
+  const runtimeWorkspaceId = useSessionStore.getState().sessions[sessionId]?.workspaceId;
+  const wasPending = pendingSessions.has(sessionId);
   try {
     await ptyKill(sessionId);
   } catch (error) {
@@ -85,18 +117,44 @@ async function releaseTerminalSession(
       managedSession = list.find((entry) => entry.ptySessionId === sessionId);
       if (managedSession) break;
     }
+    if (!managedSession && runtimeWorkspaceId && !wasPending) {
+      const listedSessions = await managedSessionList(runtimeWorkspaceId);
+      replaceHistoryCache(runtimeWorkspaceId, listedSessions);
+      managedSession = listedSessions.find(
+        (entry) => entry.ptySessionId === sessionId,
+      );
+    }
     if (managedSession) {
       await managedSessionUpdate({
         ...managedSession,
         ptySessionId: undefined,
         updatedAt: new Date().toISOString(),
       });
-      await useWorkspaceStore.getState().loadHistory(managedSession.workspaceId);
+      const refreshedSessions = await managedSessionList(managedSession.workspaceId);
+      replaceHistoryCache(managedSession.workspaceId, refreshedSessions);
     }
     return { status: "released" };
   } catch (error) {
     return { status: "history-failed", error };
   }
+}
+
+/**
+ * 合并同一终端的并发释放请求，避免重复执行非幂等后端操作。
+ * @param sessionId 待释放的 PTY 会话 ID。
+ * @returns 当前会话共享的释放结果 Promise。
+ */
+function releaseTerminalSession(
+  sessionId: string,
+): Promise<TerminalReleaseResult> {
+  const existingPromise = terminalReleasePromises.get(sessionId);
+  if (existingPromise) return existingPromise;
+
+  const releasePromise = releaseTerminalSessionOnce(sessionId).finally(() => {
+    terminalReleasePromises.delete(sessionId);
+  });
+  terminalReleasePromises.set(sessionId, releasePromise);
+  return releasePromise;
 }
 
 /**
@@ -108,6 +166,34 @@ function releaseErrorMessage(error: unknown): string {
   if (error instanceof Error && error.message) return error.message;
   const message = String(error);
   return message || "未知错误";
+}
+
+/**
+ * 判断两个窗格会话集合是否保持一致。
+ * @param originalSessionIds 释放开始时的会话 ID。
+ * @param currentSessionIds 当前窗格的会话 ID。
+ * @returns 两边包含完全相同会话时返回 true。
+ */
+function hasSameSessions(
+  originalSessionIds: readonly string[],
+  currentSessionIds: readonly string[],
+): boolean {
+  const currentSessionSet = new Set(currentSessionIds);
+  return originalSessionIds.length === currentSessionIds.length
+    && originalSessionIds.every((sessionId) => currentSessionSet.has(sessionId));
+}
+
+/**
+ * 按会话当前所在窗格移除已经终止的终端 Tab。
+ * @param sessionIds 已成功终止的会话 ID。
+ * @returns 无返回值。
+ */
+function removeReleasedTabsAtCurrentLocations(sessionIds: readonly string[]): void {
+  const layout = useLayoutStore.getState();
+  for (const sessionId of sessionIds) {
+    const currentLeafId = layout.findLeafBySession(sessionId);
+    if (currentLeafId) layout.closeTab(currentLeafId, sessionId);
+  }
 }
 
 function scheduleAiDetect(
@@ -154,6 +240,14 @@ const clampW = (w: number) => Math.min(480, Math.max(180, w));
  */
 export default function App(): React.JSX.Element {
   const [toast, setToast] = useState<string | null>(null);
+  const closingSessionIdsRef = useRef(new Set<string>());
+  const closingPaneIdsRef = useRef(new Set<string>());
+  const [closingSessionIds, setClosingSessionIds] = useState<ReadonlySet<string>>(
+    () => new Set<string>(),
+  );
+  const [closingPaneIds, setClosingPaneIds] = useState<ReadonlySet<string>>(
+    () => new Set<string>(),
+  );
   const [sidebarWidth, setSidebarWidth] = useState(() =>
     clampW(Number(localStorage.getItem(SIDEBAR_KEY)) || 240));
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
@@ -175,6 +269,37 @@ export default function App(): React.JSX.Element {
   }, []);
 
   /**
+   * 更新终端关闭中集合，并同步用于即时互斥的 ref。
+   * @param sessionId 目标终端会话 ID。
+   * @param closing 是否进入关闭中状态。
+   * @returns 无返回值。
+   */
+  const setSessionClosing = useCallback((
+    sessionId: string,
+    closing: boolean,
+  ): void => {
+    const nextIds = new Set(closingSessionIdsRef.current);
+    if (closing) nextIds.add(sessionId);
+    else nextIds.delete(sessionId);
+    closingSessionIdsRef.current = nextIds;
+    setClosingSessionIds(nextIds);
+  }, []);
+
+  /**
+   * 更新窗格关闭中集合，并同步用于即时互斥的 ref。
+   * @param leafId 目标窗格 ID。
+   * @param closing 是否进入关闭中状态。
+   * @returns 无返回值。
+   */
+  const setPaneClosing = useCallback((leafId: string, closing: boolean): void => {
+    const nextIds = new Set(closingPaneIdsRef.current);
+    if (closing) nextIds.add(leafId);
+    else nextIds.delete(leafId);
+    closingPaneIdsRef.current = nextIds;
+    setClosingPaneIds(nextIds);
+  }, []);
+
+  /**
    * 关闭一个 Tab；原生会话只关闭视图，终端会话完成资源释放后再关闭视图。
    * @param leafId Tab 所在窗格 ID。
    * @param sessionId 待关闭的 Tab 会话 ID。
@@ -184,26 +309,30 @@ export default function App(): React.JSX.Element {
     leafId: string,
     sessionId: string,
   ): Promise<void> => {
+    if (closingSessionIdsRef.current.has(sessionId)) return;
     const layout = useLayoutStore.getState();
     if (parseNativeConversationTabId(sessionId) !== null) {
       layout.closeTab(leafId, sessionId);
       return;
     }
 
-    const result = await releaseTerminalSession(sessionId);
-    if (result.status === "released") {
-      layout.closeTab(leafId, sessionId);
-      return;
+    setSessionClosing(sessionId, true);
+    try {
+      const result = await releaseTerminalSession(sessionId);
+      if (result.status === "kill-failed") {
+        showToast(`终端关闭失败，Tab 已保留：${releaseErrorMessage(result.error)}`);
+        return;
+      }
+      removeReleasedTabsAtCurrentLocations([sessionId]);
+      if (result.status === "history-failed") {
+        showToast(
+          `终端已关闭，但历史同步失败：${releaseErrorMessage(result.error)}`,
+        );
+      }
+    } finally {
+      setSessionClosing(sessionId, false);
     }
-    if (result.status === "history-failed") {
-      layout.closeTab(leafId, sessionId);
-      showToast(
-        `终端已关闭，但历史同步失败：${releaseErrorMessage(result.error)}`,
-      );
-      return;
-    }
-    showToast(`终端关闭失败，Tab 已保留：${releaseErrorMessage(result.error)}`);
-  }, [showToast]);
+  }, [setSessionClosing, showToast]);
 
   /**
    * 按 Tab 顺序释放窗格内的终端；仅终止失败保留窗格，历史同步失败统一提示。
@@ -211,45 +340,60 @@ export default function App(): React.JSX.Element {
    * @returns 关闭流程完成后解析。
    */
   const closeSessionPane = useCallback(async (leaf: LeafNode): Promise<void> => {
+    if (closingPaneIdsRef.current.has(leaf.id)) return;
+    setPaneClosing(leaf.id, true);
+    const originalSavedWorkspaceId = useLayoutStore.getState().activeSavedWorkspaceId;
+    const originalSessionIds = [...leaf.sessionIds];
     const releasedSessionIds: string[] = [];
     const historyErrors: unknown[] = [];
-    for (const sessionId of leaf.sessionIds) {
-      if (parseNativeConversationTabId(sessionId) !== null) continue;
+    try {
+      for (const sessionId of originalSessionIds) {
+        if (parseNativeConversationTabId(sessionId) !== null) continue;
 
-      const result = await releaseTerminalSession(sessionId);
-      if (result.status === "released") {
+        setSessionClosing(sessionId, true);
+        const result = await releaseTerminalSession(sessionId).finally(() => {
+          setSessionClosing(sessionId, false);
+        });
+
+        if (result.status === "kill-failed") {
+          removeReleasedTabsAtCurrentLocations(releasedSessionIds);
+          showToast(`终端关闭失败，窗格已保留：${releaseErrorMessage(result.error)}`);
+          return;
+        }
         releasedSessionIds.push(sessionId);
-        continue;
-      }
-      if (result.status === "history-failed") {
-        releasedSessionIds.push(sessionId);
-        historyErrors.push(result.error);
-        continue;
+        if (result.status === "history-failed") historyErrors.push(result.error);
       }
 
       const layout = useLayoutStore.getState();
-      for (const releasedSessionId of releasedSessionIds) {
-        layout.closeTab(leaf.id, releasedSessionId);
+      const currentLeaf = preorderLeaves(layout.tree).find((item) => item.id === leaf.id);
+      const contextUnchanged = layout.activeSavedWorkspaceId === originalSavedWorkspaceId
+        && currentLeaf !== undefined
+        && hasSameSessions(originalSessionIds, currentLeaf.sessionIds);
+      if (!contextUnchanged) {
+        removeReleasedTabsAtCurrentLocations(releasedSessionIds);
+        const historyMessage = historyErrors.length > 0
+          ? `；历史同步失败：${historyErrors.map(releaseErrorMessage).join("；")}`
+          : "";
+        showToast(`窗格内容已变化，已仅移除关闭的终端 Tab${historyMessage}`);
+        return;
       }
-      showToast(`终端关闭失败，窗格已保留：${releaseErrorMessage(result.error)}`);
-      return;
-    }
 
-    const layout = useLayoutStore.getState();
-    const currentTree = layout.tree;
-    if (currentTree.type === "leaf" && currentTree.id === leaf.id) {
-      for (const sessionId of leaf.sessionIds) {
-        layout.closeTab(leaf.id, sessionId);
+      if (layout.tree.type === "leaf" && layout.tree.id === leaf.id) {
+        for (const sessionId of currentLeaf.sessionIds) {
+          layout.closeTab(leaf.id, sessionId);
+        }
+      } else {
+        layout.closePane(leaf.id);
       }
-    } else {
-      layout.closePane(leaf.id);
+      if (historyErrors.length > 0) {
+        showToast(
+          `终端已关闭，但历史同步失败：${historyErrors.map(releaseErrorMessage).join("；")}`,
+        );
+      }
+    } finally {
+      setPaneClosing(leaf.id, false);
     }
-    if (historyErrors.length > 0) {
-      showToast(
-        `终端已关闭，但历史同步失败：${historyErrors.map(releaseErrorMessage).join("；")}`,
-      );
-    }
-  }, [showToast]);
+  }, [setPaneClosing, setSessionClosing, showToast]);
 
   const startSidebarDrag = useCallback((e: React.MouseEvent): void => {
     e.preventDefault();
@@ -615,6 +759,8 @@ export default function App(): React.JSX.Element {
           <PaneGrid
             onCloseTab={closeSessionTab}
             onClosePane={closeSessionPane}
+            closingSessionIds={closingSessionIds}
+            closingPaneIds={closingPaneIds}
           />
         </div>
       </main>

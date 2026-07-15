@@ -193,11 +193,15 @@ function createCloseCallbacks(): CloseCallbacks {
  */
 function renderPaneGrid(
   callbacks: CloseCallbacks = createCloseCallbacks(),
+  closingSessionIds: ReadonlySet<string> = new Set<string>(),
+  closingPaneIds: ReadonlySet<string> = new Set<string>(),
 ): RenderedPaneGrid {
   render(
     <PaneGrid
       onCloseTab={callbacks.onCloseTab}
       onClosePane={callbacks.onClosePane}
+      closingSessionIds={closingSessionIds}
+      closingPaneIds={closingPaneIds}
     />,
   );
   const leaves = Array.from(document.querySelectorAll<HTMLElement>(".pane-leaf"));
@@ -242,6 +246,31 @@ beforeEach(() => {
 });
 
 describe("PaneGrid 关闭委托", () => {
+  it("关闭中的 Tab 禁用关闭入口并忽略左键和中键重复关闭", () => {
+    const callbacks = createCloseCallbacks();
+    renderPaneGrid(callbacks, new Set(["pty-left-1"]));
+
+    const closeIcons = document.querySelectorAll<HTMLElement>(".pane-tab-close");
+    const tabs = document.querySelectorAll<HTMLElement>(".pane-tab");
+    expect(closeIcons[0].getAttribute("aria-disabled")).toBe("true");
+
+    fireEvent.click(closeIcons[0]);
+    fireEvent(tabs[0], new MouseEvent("auxclick", { bubbles: true, button: 1 }));
+
+    expect(callbacks.onCloseTab).not.toHaveBeenCalled();
+  });
+
+  it("关闭中的窗格禁用关闭按钮并忽略重复关闭", () => {
+    const callbacks = createCloseCallbacks();
+    renderPaneGrid(callbacks, new Set(), new Set(["leaf-left"]));
+
+    const closePaneButton = screen.getAllByTitle("关闭此分屏")[0];
+    expect((closePaneButton as HTMLButtonElement).disabled).toBe(true);
+    fireEvent.click(closePaneButton);
+
+    expect(callbacks.onClosePane).not.toHaveBeenCalled();
+  });
+
   it("点击 Tab 关闭图标时只调用关闭回调且不直接修改布局", () => {
     const callbacks = createCloseCallbacks();
     const originalTree = useLayoutStore.getState().tree;
