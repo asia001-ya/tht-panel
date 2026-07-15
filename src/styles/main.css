@@ -93,8 +93,8 @@
   background: var(--term-bg);
 }
 .pane-active {
-  border-color: var(--border-strong);
-  box-shadow: 0 0 0 1px var(--border-strong);
+  border-color: var(--accent);
+  box-shadow: 0 0 0 1px var(--focus-ring), 0 0 10px var(--focus-ring);
 }
 .pane-drop-target {
   border-color: var(--badge-running);

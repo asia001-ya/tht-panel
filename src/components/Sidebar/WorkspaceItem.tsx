@@ -17,7 +17,6 @@ import { ChevronRight, Plus } from "../ui/icons";
 export interface WorkspaceItemProps {
   ws: Workspace;
   index: number;
-  onActivate: (wsId: string) => void;
   onResume: (wsId: string, entry: ManagedSession) => void;
   onNewShell: (wsId: string) => void;
   onNewSession: (wsId: string) => void;
@@ -30,10 +29,14 @@ const BADGE_VAR: Record<SessionState, string> = {
   dead: "var(--badge-dead)",
 };
 
+/**
+ * 渲染单个项目及其会话历史入口。
+ * @param props 项目数据、排序位置与会话操作回调。
+ * @returns 项目行及按需展开的历史会话列表。
+ */
 export function WorkspaceItem({
   ws,
   index,
-  onActivate,
   onResume,
   onNewShell,
   onNewSession,
@@ -100,7 +103,8 @@ export function WorkspaceItem({
     <div className="ws-item">
       <div
         className="ws-item-row"
-        onClick={() => onActivate(ws.id)}
+        data-workspace-id={ws.id}
+        onClick={() => toggleExpand(ws.id)}
         onContextMenu={onContextMenu}
         title={ws.path}
       >

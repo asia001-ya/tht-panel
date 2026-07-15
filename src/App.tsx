@@ -1,6 +1,6 @@
 /**
  * 应用根组件：组装侧边栏 + 分屏区 + 对话框宿主，注册全局快捷键/主题，
- * 并实现「工作空间激活 / 新会话 / 恢复历史 / 新开 Shell」的落点与启动编排。
+ * 并实现「工作空间展开定位 / 新会话 / 恢复历史 / 新开 Shell」的落点与启动编排。
  *
  * 落点规则（Tab 化后）：
  *  ① 会话已在某 Tab → setActive(leaf) + activateTab（绝不覆盖当前窗格）
@@ -21,7 +21,7 @@ import { useTheme } from "./hooks/useTheme";
 import { useSettingsStore } from "./store/settingsStore";
 import { useWorkspaceStore } from "./store/workspaceStore";
 import { useLayoutStore, preorderLeaves } from "./store/layoutStore";
-import { useSessionStore, latestForWorkspace } from "./store/sessionStore";
+import { useSessionStore } from "./store/sessionStore";
 import { useUiStore } from "./store/uiStore";
 import { ptySpawn, appQuit, managedSessionCreate, managedSessionUpdate, aiSessionDetect } from "./api/commands";
 import { onSessionState, onSessionExit, onQuitRequest } from "./api/events";
@@ -31,13 +31,19 @@ import {
   resolveTerminalResumeSelection,
 } from "./lib/providers";
 import { nativeConversationTabId } from "./lib/nativeConversation";
-import {
-  workspaceActivationTarget,
-  workspaceIdForTab,
-} from "./lib/workItems";
+import { workspaceIdForTab } from "./lib/workItems";
 
 const INIT_COLS = 80;
 const INIT_ROWS = 24;
+
+/**
+ * 通知侧边栏定位指定项目行。
+ * @param workspaceId 目标工作空间 ID。
+ * @returns 无返回值。
+ */
+function dispatchWorkspaceLocation(workspaceId: string): void {
+  window.dispatchEvent(new CustomEvent("app:locate-workspace", { detail: workspaceId }));
+}
 
 /**
  * "待命名"会话注册表：spawn 后登记 ptySessionId→{workspaceId, kind}，
@@ -87,7 +93,11 @@ function scheduleAiDetect(
 const SIDEBAR_KEY = "tht-panel:sidebarWidth";
 const clampW = (w: number) => Math.min(480, Math.max(180, w));
 
-export default function App() {
+/**
+ * 渲染应用根界面并注册全局事件编排。
+ * @returns 应用根界面。
+ */
+export default function App(): React.JSX.Element {
   const [toast, setToast] = useState<string | null>(null);
   const [sidebarWidth, setSidebarWidth] = useState(() =>
     clampW(Number(localStorage.getItem(SIDEBAR_KEY)) || 240));
@@ -309,35 +319,6 @@ export default function App() {
     [openNativeConversation, openSession, pickLeafFor, spawnInto],
   );
 
-  /**
-   * 激活项目最近的历史或活跃终端；没有可用会话时新建 PTY。
-   * @param wsId 目标工作空间 ID。
-   * @returns 目标会话完成打开或启动后完成。
-   */
-  const activateWorkspace = useCallback(
-    async (wsId: string): Promise<void> => {
-      let managedSessions = useWorkspaceStore.getState().historyCache[wsId];
-      if (!managedSessions) {
-        await useWorkspaceStore.getState().loadHistory(wsId);
-        managedSessions = useWorkspaceStore.getState().historyCache[wsId];
-      }
-      const target = workspaceActivationTarget(
-        managedSessions,
-        latestForWorkspace(wsId),
-      );
-      if (target.kind === "managed") {
-        await resumeSession(wsId, target.session);
-        return;
-      }
-      if (target.kind === "terminal") {
-        openSession(target.sessionId);
-        return;
-      }
-      await newSession(wsId);
-    },
-    [newSession, openSession, resumeSession],
-  );
-
   /** 新开纯 Shell */
   const newShell = useCallback(
     async (wsId: string): Promise<void> => {
@@ -431,17 +412,32 @@ export default function App() {
 
   // Ctrl+1..9
   useEffect(() => {
+    /**
+     * 展开快捷键对应项目，并在侧边栏可见后定位项目行。
+     * @param event 包含项目排序索引的激活事件。
+     * @returns 无返回值。
+     */
     const onActivateIdx = (e: Event): void => {
       const idx = (e as CustomEvent<number>).detail;
-      const ordered = [...useWorkspaceStore.getState().workspaces].sort(
+      const workspaceStore = useWorkspaceStore.getState();
+      const ordered = [...workspaceStore.workspaces].sort(
         (a, b) => a.sortOrder - b.sortOrder,
       );
       const ws = ordered[idx];
-      if (ws) void activateWorkspace(ws.id);
+      if (!ws) return;
+      if (!workspaceStore.expandedIds.has(ws.id)) {
+        workspaceStore.toggleExpand(ws.id);
+      }
+      if (sidebarCollapsed) {
+        setSidebarCollapsed(false);
+        window.setTimeout(dispatchWorkspaceLocation, 0, ws.id);
+        return;
+      }
+      dispatchWorkspaceLocation(ws.id);
     };
     window.addEventListener("app:activate-workspace", onActivateIdx as EventListener);
     return () => window.removeEventListener("app:activate-workspace", onActivateIdx as EventListener);
-  }, [activateWorkspace]);
+  }, [sidebarCollapsed]);
 
   const toggleSidebar = useCallback((): void => {
     setSidebarCollapsed((c) => !c);
@@ -453,7 +449,6 @@ export default function App() {
       {!sidebarCollapsed && (
         <>
           <Sidebar
-            onActivate={activateWorkspace}
             onResume={resumeSession}
             onNewShell={newShell}
             onNewSession={newSession}

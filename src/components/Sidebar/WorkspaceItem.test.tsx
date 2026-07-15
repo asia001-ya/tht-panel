@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { cleanup, render, screen } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Workspace } from "../../api/types";
 import { useSessionStore } from "../../store/sessionStore";
@@ -17,9 +17,12 @@ const workspace: Workspace = {
   createdAt: "2026-07-13T09:00:00.000Z",
 };
 
+const toggleExpandMock = vi.fn();
+
 afterEach(cleanup);
 
 beforeEach(() => {
+  vi.clearAllMocks();
   useSettingsStore.setState({ config: null, loaded: false });
   useSessionStore.setState({ sessions: {} });
   useWorkspaceStore.setState({
@@ -27,6 +30,7 @@ beforeEach(() => {
     expandedIds: new Set(),
     historyCache: {},
     historyLoading: {},
+    toggleExpand: toggleExpandMock,
   });
 });
 
@@ -36,7 +40,6 @@ describe("WorkspaceItem", () => {
       <WorkspaceItem
         ws={workspace}
         index={0}
-        onActivate={vi.fn()}
         onResume={vi.fn()}
         onNewShell={vi.fn()}
         onNewSession={vi.fn()}
@@ -44,5 +47,43 @@ describe("WorkspaceItem", () => {
     );
 
     expect(screen.getByText("Panel")).toBeTruthy();
+  });
+
+  it("点击项目名称时只切换展开状态", () => {
+    const onNewSession = vi.fn();
+    render(
+      <WorkspaceItem
+        ws={workspace}
+        index={0}
+        onResume={vi.fn()}
+        onNewShell={vi.fn()}
+        onNewSession={onNewSession}
+      />,
+    );
+
+    fireEvent.click(screen.getByText("Panel"));
+
+    expect(toggleExpandMock).toHaveBeenCalledOnce();
+    expect(toggleExpandMock).toHaveBeenCalledWith(workspace.id);
+    expect(onNewSession).not.toHaveBeenCalled();
+  });
+
+  it("点击加号时只新建一次会话", () => {
+    const onNewSession = vi.fn();
+    render(
+      <WorkspaceItem
+        ws={workspace}
+        index={0}
+        onResume={vi.fn()}
+        onNewShell={vi.fn()}
+        onNewSession={onNewSession}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "新会话" }));
+
+    expect(onNewSession).toHaveBeenCalledOnce();
+    expect(onNewSession).toHaveBeenCalledWith(workspace.id);
+    expect(toggleExpandMock).not.toHaveBeenCalled();
   });
 });

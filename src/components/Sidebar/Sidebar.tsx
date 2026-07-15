@@ -22,14 +22,29 @@ import {
 } from "../ui/icons";
 
 export interface SidebarProps {
-  onActivate: (wsId: string) => void;
   onResume: (wsId: string, entry: ManagedSession) => void;
   onNewShell: (wsId: string) => void;
   onNewSession: (wsId: string) => void;
   onQuickShell: () => void;
 }
 
-export function Sidebar({ onActivate, onResume, onNewShell, onNewSession, onQuickShell }: SidebarProps): React.JSX.Element {
+/**
+ * 将目标项目行滚动到侧边栏可视区域。
+ * @param workspaceId 目标工作空间 ID。
+ * @returns 无返回值。
+ */
+function scrollWorkspaceIntoView(workspaceId: string): void {
+  const target = [...document.querySelectorAll<HTMLElement>("[data-workspace-id]")]
+    .find((element) => element.dataset.workspaceId === workspaceId);
+  target?.scrollIntoView?.({ block: "nearest" });
+}
+
+/**
+ * 渲染侧边栏导航、项目列表和最近会话。
+ * @param props 会话、Shell 与快捷终端操作回调。
+ * @returns 侧边栏界面。
+ */
+export function Sidebar({ onResume, onNewShell, onNewSession, onQuickShell }: SidebarProps): React.JSX.Element {
   const workspaces = useWorkspaceStore((s) => s.workspaces);
   const loadWorkspaces = useWorkspaceStore((s) => s.load);
   const loadAllHistories = useWorkspaceStore((s) => s.loadAllHistories);
@@ -49,6 +64,21 @@ export function Sidebar({ onActivate, onResume, onNewShell, onNewSession, onQuic
       void loadAllHistories();
     });
   }, [loadWorkspaces, loadAllHistories]);
+
+  useEffect(() => {
+    /**
+     * 清除项目过滤，并在重新渲染后定位目标项目行。
+     * @param event 包含目标工作空间 ID 的定位事件。
+     * @returns 无返回值。
+     */
+    const onLocateWorkspace = (event: Event): void => {
+      const workspaceId = (event as CustomEvent<string>).detail;
+      setFilter("");
+      window.setTimeout(scrollWorkspaceIntoView, 0, workspaceId);
+    };
+    window.addEventListener("app:locate-workspace", onLocateWorkspace);
+    return () => window.removeEventListener("app:locate-workspace", onLocateWorkspace);
+  }, []);
 
   const ordered = useMemo(
     () => [...workspaces].sort((a, b) => a.sortOrder - b.sortOrder),
@@ -155,7 +185,6 @@ export function Sidebar({ onActivate, onResume, onNewShell, onNewSession, onQuic
               key={ws.id}
               ws={ws}
               index={index}
-              onActivate={onActivate}
               onResume={onResume}
               onNewShell={onNewShell}
               onNewSession={onNewSession}

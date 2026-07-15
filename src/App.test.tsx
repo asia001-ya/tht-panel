@@ -111,20 +111,15 @@ const legacyNativeSession: ManagedSession = {
 
 vi.mock("./components/Sidebar/Sidebar", () => ({
   Sidebar: ({
-    onActivate,
     onResume,
     onNewSession,
   }: {
-    onActivate: (workspaceId: string) => void;
     onResume: (workspaceId: string, session: ManagedSession) => void;
     onNewSession: (workspaceId: string) => void;
   }) => (
     <aside>
       <button type="button" onClick={() => onNewSession(workspace.id)}>
         新会话
-      </button>
-      <button type="button" onClick={() => onActivate(workspace.id)}>
-        激活项目
       </button>
       <button
         type="button"
@@ -210,25 +205,23 @@ describe("App 会话编排", () => {
     expect(commandMocks.managedSessionCreate).not.toHaveBeenCalled();
   });
 
-  it("没有历史或活跃终端的项目激活时启动 PowerShell PTY", async () => {
+  it("Ctrl 项目快捷键只展开并定位目标项目", async () => {
+    const onLocateWorkspace = vi.fn();
+    window.addEventListener("app:locate-workspace", onLocateWorkspace);
     renderApp();
 
-    fireEvent.click(screen.getByRole("button", { name: "激活项目" }));
+    window.dispatchEvent(new CustomEvent("app:activate-workspace", { detail: 0 }));
+    window.dispatchEvent(new CustomEvent("app:activate-workspace", { detail: 0 }));
+    window.removeEventListener("app:locate-workspace", onLocateWorkspace);
 
-    await waitFor(() => expect(commandMocks.ptySpawn).toHaveBeenCalledTimes(1));
-    expect(commandMocks.ptySpawn).toHaveBeenCalledWith({
-      workspaceId: workspace.id,
-      kind: "claude",
-      providerId: providers[0].id,
-      cols: 80,
-      rows: 24,
-    });
     await waitFor(() => {
-      expect(preorderLeaves(useLayoutStore.getState().tree)[0].sessionIds).toEqual([
-        "pty-new-1",
-      ]);
+      expect(useWorkspaceStore.getState().expandedIds.has(workspace.id)).toBe(true);
     });
-    expect(commandMocks.managedSessionCreate).not.toHaveBeenCalled();
+    expect(commandMocks.ptySpawn).not.toHaveBeenCalled();
+    expect(onLocateWorkspace).toHaveBeenCalledTimes(2);
+    expect((onLocateWorkspace.mock.calls[0][0] as CustomEvent<string>).detail).toBe(
+      workspace.id,
+    );
   });
 
   it("恢复旧 native 历史时打开 native Tab 且不启动 PTY", async () => {
