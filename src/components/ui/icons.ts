@@ -22,6 +22,8 @@ export {
   Ellipsis,
   ChevronDown,
   ChevronUp,
+  Folder,
+  FolderOpen,
   Send,
   PanelLeftClose,
   PanelLeftOpen,

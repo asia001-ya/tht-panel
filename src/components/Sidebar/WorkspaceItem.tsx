@@ -1,7 +1,7 @@
 /**
  * WorkspaceItem.tsx —— 侧边栏中的单个工作空间行。
  */
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import type { Workspace, ManagedSession, SessionState } from "../../api/types";
 import { useWorkspaceStore } from "../../store/workspaceStore";
 import { useUiStore } from "../../store/uiStore";
@@ -12,7 +12,7 @@ import { startKeepAlive, stopKeepAlive, isKeepAliveActive } from "../../keepAliv
 import { SessionHistoryList } from "./SessionHistoryList";
 import { ContextMenu } from "../ui/ContextMenu";
 import type { ContextMenuItem } from "../ui/ContextMenu";
-import { ChevronRight, Plus } from "../ui/icons";
+import { Folder, FolderOpen, Plus } from "../ui/icons";
 
 export interface WorkspaceItemProps {
   ws: Workspace;
@@ -53,6 +53,12 @@ export function WorkspaceItem({
 
   const [menuPos, setMenuPos] = useState<{ x: number; y: number } | null>(null);
   const [, forceUpdate] = useState(0);
+  const [historyMounted, setHistoryMounted] = useState(false);
+
+  // 首次展开后保持挂载，收起时仅折叠容器以保留风琴动画
+  useEffect(() => {
+    if (expanded) setHistoryMounted(true);
+  }, [expanded]);
 
   const onContextMenu = (e: React.MouseEvent): void => {
     e.preventDefault();
@@ -108,11 +114,10 @@ export function WorkspaceItem({
         onContextMenu={onContextMenu}
         title={ws.path}
       >
-        <span
-          className={`ws-item-arrow${expanded ? " ws-item-arrow-open" : ""}`}
-          onClick={onToggleClick}
-        >
-          <ChevronRight size={12} strokeWidth={1.5} />
+        <span className="ws-item-folder" onClick={onToggleClick}>
+          {expanded
+            ? <FolderOpen size={14} strokeWidth={1.5} />
+            : <Folder size={14} strokeWidth={1.5} />}
         </span>
 
         <span
@@ -136,12 +141,16 @@ export function WorkspaceItem({
         {index < 9 && <span className="ws-item-hotkey">Ctrl+{index + 1}</span>}
       </div>
 
-      {expanded && (
-        <SessionHistoryList
-          ws={ws}
-          onResume={onResume}
-        />
-      )}
+      <div className={`ws-item-history${expanded ? " ws-item-history-open" : ""}`}>
+        <div className="ws-item-history-inner">
+          {historyMounted && (
+            <SessionHistoryList
+              ws={ws}
+              onResume={onResume}
+            />
+          )}
+        </div>
+      </div>
 
       {menuPos && (
         <ContextMenu
