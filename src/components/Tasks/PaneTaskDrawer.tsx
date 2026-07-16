@@ -570,6 +570,9 @@ export function PaneTaskDrawer(): React.ReactElement | null {
             <dd>{sessions[confirmation.sessionId]?.state ?? "未知"}</dd>
           </dl>
           <pre>{taskPromptPreview(confirmation.kind, confirmationTask)}</pre>
+          <p className="task-confirmation-warning">
+            仅在目标 AI 界面仍打开时执行；AI 已退出并返回 Shell 时，程序无法可靠识别。
+          </p>
           {confirmationChanged && (
             <p className="task-confirmation-warning">活动会话已变化，请重新确认</p>
           )}

@@ -105,7 +105,7 @@ impl Default for GlobalConfig {
     fn default() -> Self {
         Self {
             theme: "light".to_string(),
-            shell_path: "pwsh.exe".to_string(),
+            shell_path: "powershell.exe".to_string(),
             font_size: 13,
             scrollback_bytes: 5 * 1024 * 1024,
             scrollback_lines: 10000,
@@ -340,5 +340,17 @@ impl Default for ManagedSession {
             mode: String::new(),
             messages: Vec::new(),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::GlobalConfig;
+
+    /// 验证首次启动默认使用 Windows PowerShell，而不是要求额外安装 PowerShell 7。
+    /// 参数：无；返回：无，断言失败时由测试框架报告。
+    #[test]
+    fn global_config_defaults_to_windows_powershell() {
+        assert_eq!(GlobalConfig::default().shell_path, "powershell.exe");
     }
 }

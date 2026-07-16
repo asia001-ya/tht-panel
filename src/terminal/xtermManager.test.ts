@@ -68,22 +68,22 @@ afterEach(() => {
   }
 });
 
-describe("xterm 稳定光标", () => {
-  it("把闪烁条形光标请求转换为稳定条形光标", async () => {
+describe("xterm 原生光标控制", () => {
+  it("按 xterm 默认行为接受 CLI 的闪烁条形光标请求", async () => {
     const term = createTestTerm();
 
     await writeParsed(term, "\u001b[5 q");
 
-    expect(term.options.cursorBlink).toBe(false);
+    expect(term.options.cursorBlink).toBe(true);
     expect(term.options.cursorStyle).toBe("bar");
   });
 
-  it("把闪烁下划线光标请求转换为稳定下划线光标", async () => {
+  it("按 xterm 默认行为接受 CLI 的闪烁下划线光标请求", async () => {
     const term = createTestTerm();
 
     await writeParsed(term, "\u001b[3 q");
 
-    expect(term.options.cursorBlink).toBe(false);
+    expect(term.options.cursorBlink).toBe(true);
     expect(term.options.cursorStyle).toBe("underline");
   });
 });

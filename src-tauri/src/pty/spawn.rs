@@ -1,15 +1,10 @@
-//! 启动命令组装（spawn.rs，坑集中地，对照计划 8.6 / 风险 3、4）。
+//! 原生 Shell 与 AI 初始命令组装。
 //!
-//! 三种模式（shell / claude / codex）统一以 PowerShell 为宿主，解决 `.cmd` shim、
-//! PATH 解析问题，并让 AI 退出后仍留在 shell（"通用终端"定位）：
-//!   - shell:  `powershell.exe -NoLogo`（cwd = 工作空间目录）
-//!   - agent:  `powershell.exe -NoLogo -NoExit -EncodedCommand <base64(UTF-16LE)>`
-//!             脚本 = `chcp 65001 | Out-Null; [Console]::OutputEncoding=...UTF8; & claude --model m --resume id ...`
-//!
-//! 用 `-EncodedCommand` 规避引号地狱（base64 的是 UTF-16LE 字节）。唯一合法的命名供应商
-//! 使用自身配置；没有合法供应商时不注入应用配置，裸启动 AI 并沿用用户系统配置。
-//! env 注入仅在命名供应商有值时进行、不进命令行；命名 Claude 通过应用私有 settings
-//! 覆盖用户配置，命名 Codex 额外生成隔离的 CODEX_HOME。
+//! PTY 直接启动用户配置的 PowerShell、PowerShell 7 或 cmd，不传包装脚本或终端改造参数。
+//! Claude/Codex 会话把 AI 命令作为一次性初始输入交给 PTY；AI 退出后自然返回 Shell。
+//! 唯一合法的命名供应商使用自身配置；没有合法供应商时沿用用户系统配置。
+//! 环境变量仅在命名供应商有值时注入，命名 Claude 使用应用私有 settings，命名 Codex
+//! 使用隔离的 CODEX_HOME。
 //! **绝不修改用户的 ~/.claude 或 ~/.codex 配置文件。**
 
 use std::path::Path;
@@ -18,14 +13,22 @@ use base64::Engine;
 
 use crate::config::model::{AgentConfig, GlobalConfig, ProviderProfile, SpawnRequest, Workspace};
 use crate::error::AppError;
-use crate::pty::activity::AGENT_EXIT_MARKER_TEXT;
+
+/// 初始命令使用的 Shell 引用规则。
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ShellCarrier {
+    /// Windows PowerShell 或 PowerShell 7
+    PowerShell,
+    /// Windows 命令提示符
+    Cmd,
+}
 
 /// 已解析的启动描述：交给 PtyManager::spawn 直接用来 openpty + spawn_command。
 #[derive(Debug, Clone)]
 pub struct ResolvedLaunch {
-    /// 宿主程序（shell 路径，通常 powershell.exe）
+    /// 原生 Shell 程序路径
     pub program: String,
-    /// 传给宿主的参数（含 -EncodedCommand 及其 base64 载荷）
+    /// 传给 Shell 的启动参数；原生载体固定为空
     pub args: Vec<String>,
     /// 工作目录
     pub cwd: String,
@@ -37,6 +40,8 @@ pub struct ResolvedLaunch {
     pub kind: String,
     /// 若为恢复历史会话，记录原 AI sessionId
     pub resumed_from: Option<String>,
+    /// Shell 启动后由 PTY 写入的一次性命令；纯 Shell 会话为 None
+    pub initial_command: Option<String>,
 }
 
 /// 组装一次 spawn 的启动描述。
@@ -53,12 +58,13 @@ pub fn build_resolved_launch(
     req: &SpawnRequest,
     config_dir: &Path,
 ) -> Result<ResolvedLaunch, AppError> {
-    // 宿主 shell：全局配置指定，缺省 powershell.exe。
+    // 宿主 Shell：全局配置指定，缺省 powershell.exe。
     let program = if global.shell_path.trim().is_empty() {
         "powershell.exe".to_string()
     } else {
-        global.shell_path.clone()
+        global.shell_path.trim().to_string()
     };
+    let shell_carrier = resolve_shell_carrier(&program)?;
 
     // 工作目录：优先工作空间路径，否则用户主目录，再否则当前目录。
     let cwd = ws
@@ -67,20 +73,20 @@ pub fn build_resolved_launch(
         .or_else(|| dirs::home_dir().map(|h| h.to_string_lossy().to_string()))
         .unwrap_or_else(|| ".".to_string());
 
-    // 纯 shell 模式：只起 PowerShell，不注入 env、不拼 AI 命令。
+    // 纯 Shell 模式：只起原生载体，不注入环境或输入 AI 命令。
     if req.kind == "shell" {
         return Ok(ResolvedLaunch {
             program,
-            args: vec![
-                "-NoLogo".to_string(),
-                "-ExecutionPolicy".to_string(),
-                "Bypass".to_string(),
-            ],
+            args: Vec::new(),
             cwd,
             env: Vec::new(),
-            title: "PowerShell".to_string(),
+            title: match shell_carrier {
+                ShellCarrier::PowerShell => "PowerShell".to_string(),
+                ShellCarrier::Cmd => "命令提示符".to_string(),
+            },
             kind: "shell".to_string(),
             resumed_from: None,
+            initial_command: None,
         });
     }
 
@@ -110,8 +116,8 @@ pub fn build_resolved_launch(
     let mut env: Vec<(String, String)> = Vec::new();
     let mut ai_args: Vec<String> = Vec::new();
 
-    // 可执行名（经 PowerShell 宿主，靠 PATH 解析，兼容 .exe 与 .cmd shim）。
-    let exe = match kind.as_str() {
+    // AI 可执行名由原生 Shell 通过 PATH 解析，兼容 .exe 与 .cmd shim。
+    let executable = match kind.as_str() {
         "codex" => "codex",
         _ => "claude",
     };
@@ -147,33 +153,15 @@ pub fn build_resolved_launch(
     }
 
     // 附加启动参数逐项追加。
-    for a in &resolved_cfg.extra_args {
-        if !a.trim().is_empty() {
-            ai_args.push(a.clone());
+    for argument in &resolved_cfg.extra_args {
+        if !argument.trim().is_empty() {
+            ai_args.push(argument.clone());
         }
-    }
-
-    // Codex TUI 覆盖只作用于当前子进程，不修改用户全局配置。
-    if kind == "codex" {
-        ai_args.extend([
-            "-c".to_string(),
-            "tui.animations=false".to_string(),
-            "-c".to_string(),
-            "tui.terminal_title=[]".to_string(),
-        ]);
     }
 
     // env 注入（仅在有值时；不写入命令行避免密钥泄漏到进程列表）。
     match kind.as_str() {
         "codex" => {
-            env.push((
-                "COLORFGBG".to_string(),
-                if global.theme == "dark" {
-                    "15;0".to_string()
-                } else {
-                    "0;15".to_string()
-                },
-            ));
             if let Some(key) = non_empty(&resolved_cfg.api_key) {
                 env.push(("OPENAI_API_KEY".to_string(), key));
             }
@@ -194,29 +182,7 @@ pub fn build_resolved_launch(
         }
     }
 
-    // 组装 PowerShell 脚本：先切 UTF-8 代码页与输出编码，再 & 调用 AI（参数单引号安全包裹）。
-    let mut script = String::new();
-    script.push_str("chcp 65001 | Out-Null; ");
-    script.push_str("[Console]::OutputEncoding=[System.Text.Encoding]::UTF8; ");
-    script.push_str("& ");
-    script.push_str(&quote_arg(exe));
-    for a in &ai_args {
-        script.push(' ');
-        script.push_str(&quote_arg(a));
-    }
-    script.push_str("; [Console]::Out.Write(([char]27).ToString() + ']777;");
-    script.push_str(AGENT_EXIT_MARKER_TEXT);
-    script.push_str("' + [char]7)");
-
-    let encoded = encode_powershell_command(&script);
-    let args = vec![
-        "-NoLogo".to_string(),
-        "-NoExit".to_string(),
-        "-ExecutionPolicy".to_string(),
-        "Bypass".to_string(),
-        "-EncodedCommand".to_string(),
-        encoded,
-    ];
+    let initial_command = build_initial_command(shell_carrier, executable, &ai_args)?;
 
     // 标题：恢复会话标注"续:"，普通会话直接用 AI 名。
     let base_title = match kind.as_str() {
@@ -236,13 +202,64 @@ pub fn build_resolved_launch(
 
     Ok(ResolvedLaunch {
         program,
-        args,
+        args: Vec::new(),
         cwd,
         env,
         title,
         kind,
         resumed_from: non_empty(&req.resume_session_id),
+        initial_command: Some(initial_command),
     })
+}
+
+/// 识别程序路径对应的受支持 Shell 载体。
+/// 参数：program——Shell 可执行文件名或完整路径；返回：引用规则或明确配置错误。
+fn resolve_shell_carrier(program: &str) -> Result<ShellCarrier, AppError> {
+    let file_name = Path::new(program)
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or(program)
+        .to_ascii_lowercase();
+    match file_name.as_str() {
+        "powershell.exe" | "pwsh.exe" => Ok(ShellCarrier::PowerShell),
+        "cmd.exe" => Ok(ShellCarrier::Cmd),
+        _ => Err(AppError::Config(format!(
+            "不支持的 Shell 载体: {program}；仅支持 powershell.exe、pwsh.exe 或 cmd.exe"
+        ))),
+    }
+}
+
+/// 按载体规则构造一条可作为普通终端输入的 AI 命令。
+/// 参数：carrier——Shell 类型；executable——固定 AI 可执行名；args——AI 参数。
+/// 返回：不含输入控制字符的命令行；发现控制字符时返回不回显参数的配置错误。
+fn build_initial_command(
+    carrier: ShellCarrier,
+    executable: &str,
+    args: &[String],
+) -> Result<String, AppError> {
+    for value in std::iter::once(executable).chain(args.iter().map(String::as_str)) {
+        if value.chars().any(char::is_control) {
+            return Err(AppError::Config(
+                "AI 启动参数包含不支持的控制字符".to_string(),
+            ));
+        }
+        if carrier == ShellCarrier::Cmd && value.contains('!') {
+            return Err(AppError::Config(
+                "cmd 启动参数包含不支持的感叹号".to_string(),
+            ));
+        }
+    }
+
+    let quote_arg: fn(&str) -> String = match carrier {
+        ShellCarrier::PowerShell => quote_powershell_arg,
+        ShellCarrier::Cmd => quote_cmd_arg,
+    };
+    let mut command = executable.to_string();
+    for arg in args {
+        command.push(' ');
+        command.push_str(&quote_arg(arg));
+    }
+    Ok(command)
 }
 
 /// 按标识解析唯一且合法的命名供应商。
@@ -363,10 +380,43 @@ fn non_empty(v: &Option<String>) -> Option<String> {
         .filter(|s| !s.is_empty())
 }
 
-/// PowerShell 单引号安全包裹：内部单引号翻倍（`'` → `''`），整体外包单引号。
-/// 参数：s——原始参数；返回：可安全嵌入 PowerShell 脚本的字面量。
-fn quote_arg(s: &str) -> String {
-    format!("'{}'", s.replace('\'', "''"))
+/// 按 PowerShell 单引号规则引用一个参数。
+/// 参数：value——原始参数；返回：内部单引号翻倍后的单引号字面量。
+fn quote_powershell_arg(value: &str) -> String {
+    format!("'{}'", value.replace('\'', "''"))
+}
+
+/// 按 cmd 与 Windows 程序参数解析规则引用一个已验证参数。
+/// 参数：value——不含感叹号或控制字符的参数；返回：可阻止其余元字符展开并逐字还原的双引号参数。
+fn quote_cmd_arg(value: &str) -> String {
+    let mut quoted = String::from("\"");
+    let mut backslashes = 0usize;
+    for character in value.chars() {
+        match character {
+            '\\' => backslashes += 1,
+            '"' => {
+                quoted.extend(std::iter::repeat_n('\\', backslashes * 2));
+                quoted.push_str("\"\"");
+                backslashes = 0;
+            }
+            '%' => {
+                quoted.extend(std::iter::repeat_n('\\', backslashes * 2));
+                quoted.push('"');
+                quoted.push('^');
+                quoted.push(character);
+                quoted.push('"');
+                backslashes = 0;
+            }
+            _ => {
+                quoted.extend(std::iter::repeat_n('\\', backslashes));
+                quoted.push(character);
+                backslashes = 0;
+            }
+        }
+    }
+    quoted.extend(std::iter::repeat_n('\\', backslashes * 2));
+    quoted.push('"');
+    quoted
 }
 
 /// 转义 TOML 双引号字符串中的反斜杠与双引号。
@@ -375,23 +425,24 @@ fn toml_escape(s: &str) -> String {
     s.replace('\\', "\\\\").replace('"', "\\\"")
 }
 
-/// 把脚本编码为 PowerShell `-EncodedCommand` 所需的 base64(UTF-16LE)。
-/// 参数：script——PowerShell 脚本文本；返回：base64 字符串。
-fn encode_powershell_command(script: &str) -> String {
-    // UTF-16LE 字节序列
-    let utf16: Vec<u8> = script
-        .encode_utf16()
-        .flat_map(|u| u.to_le_bytes())
-        .collect();
-    base64::engine::general_purpose::STANDARD.encode(utf16)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::config::model::ProviderProfile;
     use std::path::PathBuf;
     use uuid::Uuid;
+
+    /// 测试临时目录清理守卫，作用域退出或 panic 展开时尽量删除唯一测试目录。
+    struct TempDirCleanup(PathBuf);
+
+    impl Drop for TempDirCleanup {
+        /// 清理守卫持有的测试目录；参数为可变自身引用；返回值为空。
+        fn drop(&mut self) {
+            if self.0.exists() {
+                let _ = std::fs::remove_dir_all(&self.0);
+            }
+        }
+    }
 
     /// 构造测试供应商；参数为标识、驱动和配置，返回完整供应商配置。
     fn provider(id: &str, driver: &str, config: AgentConfig) -> ProviderProfile {
@@ -413,31 +464,31 @@ mod tests {
         }
     }
 
-    /// 解码启动描述中的 PowerShell 脚本；参数为启动描述，返回 UTF-16LE 解码后的文本。
-    fn decode_script(launch: &ResolvedLaunch) -> String {
-        let encoded_index = launch
-            .args
-            .iter()
-            .position(|arg| arg == "-EncodedCommand")
-            .expect("AI 启动参数应包含 -EncodedCommand");
-        let encoded = launch
-            .args
-            .get(encoded_index + 1)
-            .expect("-EncodedCommand 后应存在编码脚本");
-        let bytes = base64::engine::general_purpose::STANDARD
-            .decode(encoded)
-            .expect("PowerShell 脚本应为有效 base64");
-        assert_eq!(bytes.len() % 2, 0, "UTF-16LE 字节数应为偶数");
-        let utf16 = bytes
-            .chunks_exact(2)
-            .map(|pair| u16::from_le_bytes([pair[0], pair[1]]))
-            .collect::<Vec<_>>();
-        String::from_utf16(&utf16).expect("PowerShell 脚本应为有效 UTF-16LE")
+    /// 读取 AI 会话的一次性初始命令。
+    /// 参数：launch——启动描述；返回：必须存在的初始命令引用。
+    fn initial_command(launch: &ResolvedLaunch) -> &str {
+        launch
+            .initial_command
+            .as_deref()
+            .expect("AI 启动描述应包含初始命令")
     }
 
     /// 生成测试专用临时目录；参数为空，返回带随机 UUID 的唯一目录路径。
     fn unique_temp_dir() -> PathBuf {
         std::env::temp_dir().join(format!("tht-panel-{}", Uuid::new_v4()))
+    }
+
+    /// 把字符串编码为 UTF-16 码元的十六进制文本，供真实 cmd 参数探针逐字比对。
+    /// 参数：value——待编码字符串；返回：仅含 ASCII 十六进制字符的编码结果。
+    #[cfg(windows)]
+    fn utf16_hex(value: &str) -> String {
+        use std::fmt::Write as _;
+
+        let mut encoded = String::with_capacity(value.encode_utf16().count() * 4);
+        for unit in value.encode_utf16() {
+            write!(&mut encoded, "{unit:04X}").expect("写入 String 不应失败");
+        }
+        encoded
     }
 
     fn workspace() -> Workspace {
@@ -464,10 +515,10 @@ mod tests {
         }
     }
 
-    /// 验证 AI 返回后脚本输出前台退出标记，同时保留 PowerShell 会话。
+    /// 验证 AI 由原生 PowerShell 承载，且启动描述不包含任何 Shell/TUI 改造。
     /// 参数：无；返回：无，断言失败时由测试框架报告。
     #[test]
-    fn agent_launch_signals_return_to_shell_after_command() {
+    fn agent_launch_uses_native_shell_and_plain_initial_command() {
         let mut workspace = workspace();
         workspace.default_provider_id = None;
         let launch = build_resolved_launch(
@@ -477,14 +528,297 @@ mod tests {
             Path::new("."),
         )
         .expect("AI 启动描述应生成");
-        let script = decode_script(&launch);
-        let command_index = script.find("& 'claude'").expect("脚本应启动 Claude");
-        let marker_index = script
-            .find("tht-panel-agent-exit")
-            .expect("AI 返回后应输出前台退出标记");
+        let command = initial_command(&launch);
 
-        assert!(marker_index > command_index);
-        assert!(launch.args.iter().any(|argument| argument == "-NoExit"));
+        assert_eq!(launch.program, "powershell.exe");
+        assert!(launch.args.is_empty());
+        assert_eq!(command, "claude");
+        assert!(launch.env.is_empty());
+        for forbidden in [
+            "EncodedCommand",
+            "chcp",
+            "ExecutionPolicy",
+            "NoExit",
+            "tui.animations",
+            "tui.terminal_title",
+            "COLORFGBG",
+            "tht-panel-agent-exit",
+            "\u{1b}]777",
+        ] {
+            assert!(!command.contains(forbidden), "初始命令不应包含 {forbidden}");
+        }
+    }
+
+    /// 验证三个受支持载体都直接启动，纯 Shell 不写入初始命令。
+    /// 参数：无；返回：无，断言失败时由测试框架报告。
+    #[test]
+    fn supported_shell_carriers_start_without_arguments() {
+        for shell_path in ["powershell.exe", "pwsh.exe", r"C:\Windows\System32\cmd.exe"] {
+            let mut global = GlobalConfig::default();
+            global.shell_path = shell_path.to_string();
+            let mut req = request("unused");
+            req.kind = "shell".to_string();
+
+            let launch = build_resolved_launch(&global, Some(&workspace()), &req, Path::new("."))
+                .expect("受支持 Shell 应生成启动描述");
+
+            assert_eq!(launch.program, shell_path);
+            assert!(launch.args.is_empty());
+            assert!(launch.initial_command.is_none());
+            assert!(launch.env.is_empty());
+        }
+    }
+
+    /// 验证三个受支持载体都能原样启动 Claude 与 Codex，并仅通过初始输入传递 AI 命令。
+    /// 参数：无；返回：无，断言失败时由测试框架报告。
+    #[test]
+    fn supported_shell_carriers_launch_both_ai_commands() {
+        for shell_path in ["powershell.exe", "pwsh.exe", "cmd.exe"] {
+            for kind in ["claude", "codex"] {
+                let mut global = GlobalConfig::default();
+                global.shell_path = shell_path.to_string();
+                let mut workspace = workspace();
+                workspace.default_provider_id = None;
+                let mut req = request("unused");
+                req.kind = kind.to_string();
+                req.provider_id = None;
+
+                let launch = build_resolved_launch(&global, Some(&workspace), &req, Path::new("."))
+                    .expect("受支持 Shell 应生成 AI 启动描述");
+
+                assert_eq!(launch.program, shell_path);
+                assert!(launch.args.is_empty());
+                assert!(launch.initial_command.is_some());
+                assert!(
+                    initial_command(&launch).starts_with(kind),
+                    "{shell_path} 的初始命令应以 {kind} 开头"
+                );
+            }
+        }
+    }
+
+    /// 验证未知 Shell 不会套用未经确认的命令引用规则。
+    /// 参数：无；返回：无，断言失败时由测试框架报告。
+    #[test]
+    fn unsupported_shell_carrier_is_rejected() {
+        let mut global = GlobalConfig::default();
+        global.shell_path = "bash.exe".to_string();
+
+        let error = build_resolved_launch(
+            &global,
+            Some(&workspace()),
+            &request("unused"),
+            Path::new("."),
+        )
+        .expect_err("未知 Shell 应返回配置错误");
+
+        assert!(matches!(error, AppError::Config(_)));
+        assert!(error.to_string().contains("bash.exe"));
+    }
+
+    /// 验证 PowerShell 参数使用单引号并安全转义内部单引号。
+    /// 参数：无；返回：无，断言失败时由测试框架报告。
+    #[test]
+    fn powershell_argument_uses_single_quote_rules() {
+        assert_eq!(
+            quote_powershell_arg("two words 'quoted'"),
+            "'two words ''quoted'''"
+        );
+    }
+
+    /// 验证 cmd 参数同时满足 cmd 引号状态与 Windows 程序参数解析规则。
+    /// 参数：无；返回：无，断言失败时由测试框架报告。
+    #[test]
+    fn cmd_argument_uses_windows_quote_rules() {
+        assert_eq!(
+            quote_cmd_arg(r#"two words "quoted"\"#),
+            r#""two words ""quoted""\\""#
+        );
+    }
+
+    /// 验证 PTY 初始命令拒绝输入控制字符，且配置错误不会回显敏感参数。
+    /// 参数：无；返回：无，断言失败时由测试框架报告。
+    #[test]
+    fn initial_command_rejects_control_characters_without_leaking_arguments() {
+        for control_character in ['\r', '\n', '\u{1b}'] {
+            let sensitive_marker = "sensitive-session-id";
+            let sensitive_argument = format!("{sensitive_marker}{control_character}private-suffix");
+            let mut workspace = workspace();
+            workspace.default_provider_id = None;
+            let mut req = request("unused");
+            req.provider_id = None;
+            req.resume_session_id = Some(sensitive_argument.clone());
+
+            let error = build_resolved_launch(
+                &GlobalConfig::default(),
+                Some(&workspace),
+                &req,
+                Path::new("."),
+            )
+            .expect_err("含输入控制字符的参数应被拒绝");
+            let error_message = error.to_string();
+
+            assert!(matches!(error, AppError::Config(_)));
+            assert!(!error_message.contains(sensitive_marker));
+            assert!(!error_message.contains(&sensitive_argument));
+        }
+    }
+
+    /// 验证 cmd 拒绝会触发延迟展开的感叹号，且配置错误不会回显敏感参数。
+    /// 参数：无；返回：无，断言失败时由测试框架报告。
+    #[test]
+    fn cmd_initial_command_rejects_exclamation_mark_without_leaking_argument() {
+        let sensitive_argument = "sensitive!private";
+        let mut global = GlobalConfig::default();
+        global.shell_path = "cmd.exe".to_string();
+        let mut workspace = workspace();
+        workspace.default_provider_id = None;
+        let mut req = request("unused");
+        req.provider_id = None;
+        req.resume_session_id = Some(sensitive_argument.to_string());
+
+        let error = build_resolved_launch(&global, Some(&workspace), &req, Path::new("."))
+            .expect_err("cmd 参数中的感叹号应被拒绝");
+        let error_message = error.to_string();
+
+        assert!(matches!(error, AppError::Config(_)));
+        assert!(!error_message.contains(sensitive_argument));
+        assert!(!error_message.contains("sensitive"));
+    }
+
+    /// 验证真实 cmd 通过直接 exe 或 npm 风格 shim 时都逐字传递参数，且不会执行旁路命令。
+    /// 参数：无；返回：无，断言失败时由测试框架报告。
+    #[cfg(windows)]
+    #[test]
+    fn cmd_arguments_round_trip_through_real_cmd() {
+        use std::io::Write as _;
+        use std::process::{Command, Stdio};
+
+        let temp_dir = unique_temp_dir();
+        let _cleanup = TempDirCleanup(temp_dir.clone());
+        std::fs::create_dir_all(&temp_dir).expect("应创建 cmd 探针临时目录");
+        let probe_path = temp_dir.join("argv-probe.cjs");
+        std::fs::write(
+            &probe_path,
+            r#"var args = process.argv.slice(2);
+var lines = ["COUNT:" + args.length];
+for (var i = 0; i < args.length; i++) {
+    var value = String(args[i]);
+    var encoded = "";
+    for (var j = 0; j < value.length; j++) {
+        var unit = value.charCodeAt(j).toString(16).toUpperCase();
+        while (unit.length < 4) unit = "0" + unit;
+        encoded += unit;
+    }
+    lines.push(i + ":" + encoded);
+}
+process.stdout.write(lines.join("\n") + "\n");
+"#,
+        )
+        .expect("应写入 cmd argv 探针");
+        std::fs::write(
+            temp_dir.join("argv-probe.cmd"),
+            "@ECHO off\r\nnode.exe \"%~dp0argv-probe.cjs\" %*\r\n",
+        )
+        .expect("应写入 npm 风格 cmd 探针载体");
+
+        let arguments = vec![
+            String::new(),
+            "two words".to_string(),
+            r#"embedded"quote"#.to_string(),
+            r#"slash\"quote"#.to_string(),
+            r#"trailing\"#.to_string(),
+            r#"&|<>^()%"#.to_string(),
+            "%THT_PANEL_CMD_PROBE%".to_string(),
+            r#"boundary\%THT_PANEL_CMD_PROBE%\"#.to_string(),
+            r#"x" & echo CMD_INJECTION & rem ""#.to_string(),
+        ];
+        let mut quoted_arguments = String::new();
+        for argument in &arguments {
+            quoted_arguments.push(' ');
+            quoted_arguments.push_str(&quote_cmd_arg(argument));
+        }
+        // npm 风格 shim 依赖 PATH 解析；NoDefaultCurrentDirectoryInExePath=1 时
+        // cmd 不从当前目录找 .cmd，因此显式把探针目录前置到 PATH。
+        let probe_search_path = std::env::var_os("PATH").map_or_else(
+            || temp_dir.as_os_str().to_owned(),
+            |existing| {
+                let mut joined = temp_dir.as_os_str().to_owned();
+                joined.push(";");
+                joined.push(existing);
+                joined
+            },
+        );
+
+        let mut outputs = Vec::new();
+        for (carrier_name, command_prefix) in [
+            (
+                "direct exe",
+                format!("node.exe {}", quote_cmd_arg(&probe_path.to_string_lossy())),
+            ),
+            ("npm 风格 .cmd", "argv-probe.cmd".to_string()),
+        ] {
+            for delayed_expansion in [false, true] {
+                let delayed_flag = if delayed_expansion { "/V:ON" } else { "/V:OFF" };
+                let command = format!("{command_prefix}{quoted_arguments}");
+                let mut child = Command::new("cmd.exe")
+                    .args(["/D", "/Q", delayed_flag])
+                    .env("THT_PANEL_CMD_PROBE", "EXPANDED")
+                    .env("PATH", &probe_search_path)
+                    .current_dir(&temp_dir)
+                    .stdin(Stdio::piped())
+                    .stdout(Stdio::piped())
+                    .stderr(Stdio::piped())
+                    .spawn()
+                    .expect("应启动真实交互式 cmd");
+                let mut stdin = child.stdin.take().expect("交互式 cmd 应提供标准输入");
+                stdin
+                    .write_all(format!("{command}\r\nexit\r\n").as_bytes())
+                    .expect("应向交互式 cmd 写入探针命令");
+                drop(stdin);
+                outputs.push((
+                    carrier_name,
+                    delayed_flag,
+                    child.wait_with_output().expect("应等待真实 cmd argv 探针"),
+                ));
+            }
+        }
+        let mut expected_lines = vec![format!("COUNT:{}", arguments.len())];
+        expected_lines.extend(
+            arguments
+                .iter()
+                .enumerate()
+                .map(|(index, value)| format!("{index}:{}", utf16_hex(value))),
+        );
+        for (carrier_name, delayed_flag, output) in outputs {
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            assert!(
+                output.status.success(),
+                "cmd {carrier_name} {delayed_flag} 探针失败；stdout={stdout:?}；stderr={stderr:?}"
+            );
+            assert!(
+                !stdout.contains("CMD_INJECTION"),
+                "cmd {carrier_name} {delayed_flag} 执行了参数中的旁路命令：{stdout:?}"
+            );
+            let actual_lines = stdout
+                .lines()
+                .filter_map(|line| {
+                    line.find("COUNT:")
+                        .map(|index| line[index..].to_string())
+                        .or_else(|| {
+                            line.chars()
+                                .next()
+                                .filter(char::is_ascii_digit)
+                                .map(|_| line.to_string())
+                        })
+                })
+                .collect::<Vec<_>>();
+            assert_eq!(
+                actual_lines, expected_lines,
+                "cmd {carrier_name} {delayed_flag} 未逐字还原 argv"
+            );
+        }
     }
 
     /// 验证严格模式可使用与请求类型一致的唯一合法命名供应商。
@@ -503,13 +837,13 @@ mod tests {
 
         let launch = build_resolved_launch(&global, Some(&workspace()), &req, &config_dir)
             .expect("严格模式应接受唯一且类型匹配的命名供应商");
-        let script = decode_script(&launch);
+        let command = initial_command(&launch);
         if config_dir.exists() {
             std::fs::remove_dir_all(&config_dir).expect("应只清理本测试创建的唯一临时目录");
         }
 
         assert_eq!(launch.kind, "claude");
-        assert!(script.contains("strict-provider-model"));
+        assert!(command.contains("strict-provider-model"));
     }
 
     /// 验证严格模式拒绝不存在的命名供应商，而不是回退到项目默认供应商。
@@ -624,15 +958,14 @@ mod tests {
 
         let launch = build_resolved_launch(&global, Some(&ws), &req, &config_dir)
             .expect("严格系统模式应生成启动描述");
-        let script = decode_script(&launch);
+        let command = initial_command(&launch);
         if config_dir.exists() {
             std::fs::remove_dir_all(&config_dir).expect("应只清理本测试创建的唯一临时目录");
         }
 
         assert_eq!(launch.kind, "codex");
-        expect_env(&launch, "COLORFGBG", "0;15");
-        assert_eq!(launch.env.len(), 1, "严格系统模式只应注入主题环境");
-        assert!(!script.contains("project-default-model"));
+        assert!(launch.env.is_empty(), "严格系统模式不应改造 Shell 环境");
+        assert!(!command.contains("project-default-model"));
     }
 
     /// 验证 shell 启动在严格模式下仍完全绕过供应商校验。
@@ -653,6 +986,8 @@ mod tests {
 
         assert_eq!(launch.kind, "shell");
         assert_eq!(launch.title, "PowerShell");
+        assert!(launch.args.is_empty());
+        assert!(launch.initial_command.is_none());
         assert!(launch.env.is_empty());
     }
 
@@ -679,11 +1014,11 @@ mod tests {
             &unique_temp_dir(),
         )
         .expect("重复请求供应商应回退到项目默认供应商");
-        let script = decode_script(&launch);
+        let command = initial_command(&launch);
 
         assert_eq!(launch.kind, "claude");
-        assert!(script.contains("project-default-model"));
-        assert!(!script.contains("duplicate-valid-model"));
+        assert!(command.contains("project-default-model"));
+        assert!(!command.contains("duplicate-valid-model"));
     }
 
     /// 验证不存在的请求供应商不会报错，而会回退到唯一合法的项目默认供应商。
@@ -703,7 +1038,7 @@ mod tests {
                 .expect("不存在的请求供应商应回退到项目默认供应商");
 
         assert_eq!(launch.kind, "claude");
-        assert!(decode_script(&launch).contains("project-default-model"));
+        assert!(initial_command(&launch).contains("project-default-model"));
     }
 
     /// 验证不支持的请求供应商驱动无效，并回退到唯一合法的项目默认供应商。
@@ -728,11 +1063,11 @@ mod tests {
             &unique_temp_dir(),
         )
         .expect("非法请求供应商应回退到项目默认供应商");
-        let script = decode_script(&launch);
+        let command = initial_command(&launch);
 
         assert_eq!(launch.kind, "claude");
-        assert!(script.contains("project-default-model"));
-        assert!(!script.contains("illegal-request-model"));
+        assert!(command.contains("project-default-model"));
+        assert!(!command.contains("illegal-request-model"));
     }
 
     /// 验证重复的项目默认供应商无效，即使其中恰有一个条目的驱动合法。
@@ -753,7 +1088,7 @@ mod tests {
             .expect("重复项目默认供应商应进入系统回退");
 
         assert_eq!(launch.kind, "codex");
-        assert!(!decode_script(&launch).contains("duplicate-valid-model"));
+        assert!(!initial_command(&launch).contains("duplicate-valid-model"));
     }
 
     /// 验证不支持的项目默认供应商驱动无效，并按请求类型进入系统回退。
@@ -775,7 +1110,7 @@ mod tests {
             .expect("非法项目默认供应商应进入系统回退");
 
         assert_eq!(launch.kind, "codex");
-        assert!(!decode_script(&launch).contains("illegal-driver-model"));
+        assert!(!initial_command(&launch).contains("illegal-driver-model"));
     }
 
     /// 验证系统回退忽略全局和工作空间旧配置，仅生成裸 AI 启动命令。
@@ -797,26 +1132,20 @@ mod tests {
 
             let launch = build_resolved_launch(&global, Some(&ws), &req, Path::new("."))
                 .expect("系统回退应生成启动描述");
-            let script = decode_script(&launch);
+            let command = initial_command(&launch);
 
-            assert!(launch.args.iter().any(|arg| arg == "-NoExit"));
-            assert!(launch.args.iter().any(|arg| arg == "-EncodedCommand"));
-            if kind == "codex" {
-                expect_env(&launch, "COLORFGBG", "0;15");
-                assert_eq!(launch.env.len(), 1, "Codex 系统回退只应注入主题环境");
-            } else {
-                assert!(launch.env.is_empty(), "Claude 系统回退不应注入应用环境变量");
-            }
+            assert!(launch.args.is_empty());
+            assert!(launch.env.is_empty(), "系统回退不应注入应用环境变量");
             for marker in legacy_markers {
-                assert!(!script.contains(marker), "脚本不应包含旧配置标记 {marker}");
+                assert!(!command.contains(marker), "命令不应包含旧配置标记 {marker}");
             }
         }
     }
 
-    /// 验证浅色 Codex 系统回退注入可读主题并关闭 TUI 动画。
+    /// 验证 Codex 系统回退不注入主题变量或 TUI 覆盖。
     /// 参数：无；返回：无，断言失败时由测试框架报告。
     #[test]
-    fn codex_terminal_light_uses_theme_and_tui_overrides() {
+    fn codex_system_launch_does_not_override_terminal_behavior() {
         let mut ws = workspace();
         ws.default_provider_id = None;
         let mut req = request("unused");
@@ -826,14 +1155,15 @@ mod tests {
         let launch =
             build_resolved_launch(&GlobalConfig::default(), Some(&ws), &req, Path::new("."))
                 .expect("浅色 Codex 应生成启动描述");
-        let script = decode_script(&launch);
+        let command = initial_command(&launch);
 
-        expect_env(&launch, "COLORFGBG", "0;15");
-        assert!(script.contains("'tui.animations=false'"));
-        assert!(script.contains("'tui.terminal_title=[]'"));
+        assert!(launch.env.is_empty());
+        assert_eq!(command, "codex");
+        assert!(!command.contains("tui.animations"));
+        assert!(!command.contains("tui.terminal_title"));
     }
 
-    /// 验证深色 Codex 恢复命令保留子命令顺序并使用深色主题环境。
+    /// 验证 Codex 恢复命令保留子命令顺序与用户附加参数。
     /// 参数：无；返回：无，断言失败时由测试框架报告。
     #[test]
     fn codex_terminal_dark_preserves_resume_and_extra_args() {
@@ -856,15 +1186,15 @@ mod tests {
 
         let launch = build_resolved_launch(&global, Some(&ws), &req, &config_dir)
             .expect("深色 Codex 恢复应生成启动描述");
-        let script = decode_script(&launch);
+        let command = initial_command(&launch);
         if config_dir.exists() {
             std::fs::remove_dir_all(&config_dir).expect("应只清理本测试创建的唯一临时目录");
         }
 
-        expect_env(&launch, "COLORFGBG", "15;0");
-        assert!(script.contains("'codex' 'resume' 'session-1' '--no-alt-screen'"));
-        assert!(script.contains("'tui.animations=false'"));
-        assert!(script.contains("'tui.terminal_title=[]'"));
+        assert!(command.contains("codex 'resume' 'session-1' '--no-alt-screen'"));
+        assert!(!launch.env.iter().any(|(key, _)| key == "COLORFGBG"));
+        assert!(!command.contains("tui.animations"));
+        assert!(!command.contains("tui.terminal_title"));
     }
 
     /// 验证 Codex 系统回退不注入或创建隔离 CODEX_HOME，并只清理本测试唯一目录。
@@ -924,10 +1254,13 @@ mod tests {
             &config_dir,
         )
         .expect("命名 Claude 供应商应生成启动描述");
-        let script = decode_script(&launch);
+        let command = initial_command(&launch);
         let expected_path = expected_settings.to_string_lossy();
 
-        assert!(script.contains(&format!("'--settings' {}", quote_arg(&expected_path))));
+        assert!(command.contains(&format!(
+            "'--settings' {}",
+            quote_powershell_arg(&expected_path)
+        )));
         let settings_text = std::fs::read_to_string(&expected_settings)
             .expect("命名 Claude 供应商应生成独立 settings.json");
         let settings: serde_json::Value =
@@ -955,7 +1288,7 @@ mod tests {
         let launch = build_resolved_launch(&GlobalConfig::default(), Some(&ws), &req, &config_dir)
             .expect("Claude 系统回退应生成启动描述");
 
-        assert!(!decode_script(&launch).contains("'--settings'"));
+        assert!(!initial_command(&launch).contains("'--settings'"));
         assert!(!config_dir.join("claude-settings").exists());
     }
 

@@ -291,7 +291,7 @@ mod tests {
     use std::collections::HashMap;
     use std::fs;
     use std::path::{Path, PathBuf};
-    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+    use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::{Arc, Barrier};
     use std::thread;
     use std::time::Duration;
@@ -338,7 +338,6 @@ mod tests {
         sessions: HashMap<String, PtySessionInfo>,
         writes: Mutex<Vec<(String, String)>>,
         fail_write: bool,
-        agent_active: bool,
     }
 
     impl FakePty {
@@ -349,15 +348,7 @@ mod tests {
                 sessions: HashMap::from([(info.session_id.clone(), info)]),
                 writes: Mutex::new(Vec::new()),
                 fail_write: false,
-                agent_active: true,
             }
-        }
-
-        /// 设置测试会话中的 AI 是否仍处于前台。
-        /// 参数：active——是否仍在前台；返回：更新后的 PTY 替身。
-        fn with_agent_active(mut self, active: bool) -> Self {
-            self.agent_active = active;
-            self
         }
 
         /// 返回已记录写入的副本。
@@ -380,7 +371,7 @@ mod tests {
                     "会话不存在: {session_id}"
                 )))
             })?;
-            validate_task_prompt_session(info, session_id, self.agent_active)
+            validate_task_prompt_session(info, session_id)
                 .map_err(TaskPromptWriteError::Rejected)?;
             if self.fail_write {
                 return Err(TaskPromptWriteError::DeliveryUnknown(AppError::Pty(
@@ -423,7 +414,7 @@ mod tests {
             session_id: &str,
             _data: &str,
         ) -> Result<(), TaskPromptWriteError> {
-            validate_task_prompt_session(&self.info, session_id, true)
+            validate_task_prompt_session(&self.info, session_id)
                 .map_err(TaskPromptWriteError::Rejected)?;
             self.writes.fetch_add(1, Ordering::SeqCst);
             let active = self.active_writes.fetch_add(1, Ordering::SeqCst) + 1;
@@ -463,50 +454,11 @@ mod tests {
             session_id: &str,
             _data: &str,
         ) -> Result<(), TaskPromptWriteError> {
-            validate_task_prompt_session(&self.info, session_id, true)
+            validate_task_prompt_session(&self.info, session_id)
                 .map_err(TaskPromptWriteError::Rejected)?;
             self.writes.fetch_add(1, Ordering::SeqCst);
             self.write_started.wait();
             self.allow_write.wait();
-            Ok(())
-        }
-    }
-
-    /// 在会话快照返回后模拟 AI 立即退出的 PTY 测试替身。
-    struct ExitRacePty {
-        info: PtySessionInfo,
-        agent_active: AtomicBool,
-        writes: AtomicUsize,
-    }
-
-    impl ExitRacePty {
-        /// 创建初始仍处于 AI 前台的竞争测试替身。
-        /// 参数：info——会话信息；返回：PTY 替身。
-        fn new(info: PtySessionInfo) -> Self {
-            Self {
-                info,
-                agent_active: AtomicBool::new(true),
-                writes: AtomicUsize::new(0),
-            }
-        }
-    }
-
-    impl TaskPty for ExitRacePty {
-        /// 模拟退出先取得会话锁，原子校验必须在写入前看到前台已关闭。
-        /// 参数：session_id——会话标识；data——单行提示；返回：写前拒绝。
-        fn validate_and_write_task(
-            &self,
-            session_id: &str,
-            _data: &str,
-        ) -> Result<(), TaskPromptWriteError> {
-            self.agent_active.store(false, Ordering::SeqCst);
-            validate_task_prompt_session(
-                &self.info,
-                session_id,
-                self.agent_active.load(Ordering::SeqCst),
-            )
-            .map_err(TaskPromptWriteError::Rejected)?;
-            self.writes.fetch_add(1, Ordering::SeqCst);
             Ok(())
         }
     }
@@ -596,38 +548,23 @@ mod tests {
         );
     }
 
-    /// 验证 AI 返回 PowerShell 后，即使会话仍为 idle 也不能接收任务。
+    /// 验证 idle AI 会话可在人工确认后接收任务，不依赖私有前台标记。
     /// 参数：无；返回：无，断言失败时由测试框架报告。
     #[test]
-    fn dispatch_rejects_session_after_agent_returns_to_shell() {
+    fn dispatch_allows_idle_ai_session_after_manual_confirmation() {
         let dir = TestDir::new();
         let store = TaskStore::new(dir.path()).expect("应创建任务存储");
         let task = store.create(request()).expect("应创建任务");
-        let pty = FakePty::new(session("pty-server", "codex", SessionState::Idle))
-            .with_agent_active(false);
+        let pty = FakePty::new(session("pty-server", "codex", SessionState::Idle));
 
-        assert!(dispatch_task(&store, &pty, &task.id, "pane-server", "pty-server").is_err());
-        assert!(pty.writes().is_empty());
+        let dispatched = dispatch_task(&store, &pty, &task.id, "pane-server", "pty-server")
+            .expect("人工确认后的 idle AI 会话应接收任务");
+
+        assert_eq!(dispatched.status, TaskStatus::Dispatched);
+        assert_eq!(pty.writes().len(), 1);
         assert_eq!(
             store.get(&task.id).expect("任务应存在").status,
-            TaskStatus::Queued
-        );
-    }
-
-    /// 验证 AI 在校验与写入之间退出时不会收到任务。
-    /// 参数：无；返回：无，断言失败时由测试框架报告。
-    #[test]
-    fn agent_exit_between_validation_and_write_prevents_injection() {
-        let dir = TestDir::new();
-        let store = TaskStore::new(dir.path()).expect("应创建任务存储");
-        let task = store.create(request()).expect("应创建任务");
-        let pty = ExitRacePty::new(session("pty-server", "codex", SessionState::Idle));
-
-        assert!(dispatch_task(&store, &pty, &task.id, "pane-server", "pty-server").is_err());
-        assert_eq!(pty.writes.load(Ordering::SeqCst), 0);
-        assert_eq!(
-            store.get(&task.id).expect("任务应存在").status,
-            TaskStatus::Queued
+            TaskStatus::Dispatched
         );
     }
 

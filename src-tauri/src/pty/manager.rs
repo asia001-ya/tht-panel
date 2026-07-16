@@ -26,7 +26,7 @@ use crate::config::model::{
     EVT_SESSION_EXIT, EVT_SESSION_STATE,
 };
 use crate::error::AppError;
-use crate::pty::activity::{AgentForeground, BelScanner};
+use crate::pty::activity::BelScanner;
 use crate::pty::pump::run_pump;
 use crate::pty::ring::RingBuffer;
 use crate::pty::session::PtySession;
@@ -36,10 +36,6 @@ use crate::pty::spawn::ResolvedLaunch;
 const IDLE_AFTER: Duration = Duration::from_secs(2);
 /// reader 单次读取缓冲大小。
 const READ_BUF: usize = 8192;
-/// PTY 子进程使用的终端能力标识，确保 CLI 输出 ANSI 256 色与真彩色序列。
-const TERMINAL_ENVIRONMENT: [(&str, &str); 2] =
-    [("TERM", "xterm-256color"), ("COLORTERM", "truecolor")];
-
 /// 会话表类型别名。
 type SessionMap = Arc<Mutex<HashMap<String, Arc<Mutex<PtySession>>>>>;
 
@@ -112,8 +108,8 @@ impl PtyManager {
 
     /// 启动一个新 PTY 会话。
     ///
-    /// 流程（计划 8.1）：openpty(按 cols/rows) → spawn_command → **立即 drop(slave)** →
-    /// try_clone_reader / take_writer / clone_killer → 起 reader/pump/waiter 三线程。
+    /// 流程：openpty(按 cols/rows) → spawn_command → **立即 drop(slave)** →
+    /// 取得 reader/writer/killer → 写入可选初始命令 → 起 reader/pump/waiter 三线程。
     /// spawn 后**不 attach**（由前端随后调用 pty_attach）。
     ///
     /// 参数：launch——已解析启动描述；req 的 cols/rows/workspace_id 等经 launch 与本函数使用；
@@ -152,11 +148,18 @@ impl PtyManager {
             .master
             .try_clone_reader()
             .map_err(|e| AppError::Pty(format!("clone reader 失败: {e}")))?;
-        let writer = pair
+        let mut writer = pair
             .master
             .take_writer()
             .map_err(|e| AppError::Pty(format!("take writer 失败: {e}")))?;
-        let killer = child.clone_killer();
+        let mut killer = child.clone_killer();
+        write_initial_command_or_terminate(
+            writer.as_mut(),
+            launch.initial_command.as_deref(),
+            || {
+                let _ = killer.kill();
+            },
+        )?;
 
         let session_id = Uuid::new_v4().to_string();
         let info = PtySessionInfo {
@@ -178,7 +181,6 @@ impl PtyManager {
             ring: RingBuffer::new(scrollback_bytes),
             sink: None,
             scanner: BelScanner::new(),
-            agent_foreground: AgentForeground::new(&info.kind),
             last_output: Instant::now(),
             last_notify: None,
         };
@@ -189,17 +191,12 @@ impl PtyManager {
         let (tx, rx) = mpsc::channel::<Vec<u8>>();
         {
             let mut reader = reader;
-            let arc_reader = arc.clone();
             thread::spawn(move || {
                 let mut buf = [0u8; READ_BUF];
                 loop {
                     match reader.read(&mut buf) {
                         Ok(0) => break, // EOF：子进程退出且 slave 已释放
                         Ok(n) => {
-                            {
-                                let mut session = arc_reader.lock();
-                                observe_reader_chunk(&mut session.agent_foreground, &buf[..n]);
-                            }
                             if tx.send(buf[..n].to_vec()).is_err() {
                                 break; // pump 端已退出
                             }
@@ -231,12 +228,7 @@ impl PtyManager {
                 if let Some(arc) = sessions.lock().get(&sid).cloned() {
                     let (state_payload, exit_payload) = {
                         let mut s = arc.lock();
-                        let PtySession {
-                            info,
-                            agent_foreground,
-                            ..
-                        } = &mut *s;
-                        deactivate_task_injection(info, agent_foreground);
+                        s.info.state = SessionState::Dead;
                         if let Some(sink) = &s.sink {
                             let _ = sink.send(PtyOutputMsg::Exit { code });
                         }
@@ -286,7 +278,7 @@ impl PtyManager {
         Ok(())
     }
 
-    /// 在同一会话锁内校验真实 AI 前台状态并写入任务提示。
+    /// 在同一会话锁内校验 AI 会话类型与状态并写入任务提示。
     /// 参数：session_id——会话标识；data——单行任务提示；返回：成功或带交付阶段的错误。
     pub(crate) fn validate_and_write_task(
         &self,
@@ -297,12 +289,8 @@ impl PtyManager {
             .get(session_id)
             .map_err(TaskPromptWriteError::Rejected)?;
         let mut session = session.lock();
-        validate_task_prompt_session(
-            &session.info,
-            session_id,
-            session.agent_foreground.is_active(),
-        )
-        .map_err(TaskPromptWriteError::Rejected)?;
+        validate_task_prompt_session(&session.info, session_id)
+            .map_err(TaskPromptWriteError::Rejected)?;
         if session.writer.is_none() {
             return Err(TaskPromptWriteError::Rejected(AppError::Pty(
                 "会话写入端不可用".to_string(),
@@ -333,12 +321,7 @@ impl PtyManager {
         let arc = self.get(session_id)?;
         {
             let mut s = arc.lock();
-            let PtySession {
-                info,
-                agent_foreground,
-                ..
-            } = &mut *s;
-            deactivate_task_injection(info, agent_foreground);
+            s.info.state = SessionState::Dead;
             let _ = s.killer.kill();
         }
         self.sessions.lock().remove(session_id);
@@ -395,12 +378,7 @@ impl PtyManager {
         let arcs: Vec<Arc<Mutex<PtySession>>> = self.sessions.lock().values().cloned().collect();
         for arc in arcs {
             let mut session = arc.lock();
-            let PtySession {
-                info,
-                agent_foreground,
-                ..
-            } = &mut *session;
-            deactivate_task_injection(info, agent_foreground);
+            session.info.state = SessionState::Dead;
             let _ = session.killer.kill();
         }
         self.sessions.lock().clear();
@@ -417,31 +395,17 @@ impl PtyManager {
     }
 }
 
-/// 使会话任务注入立即失效，供 kill、kill_all 与进程退出路径在持锁时调用。
-/// 参数：info——会话信息；agent_foreground——AI 前台状态；返回：无。
-fn deactivate_task_injection(info: &mut PtySessionInfo, agent_foreground: &mut AgentForeground) {
-    info.state = SessionState::Dead;
-    agent_foreground.deactivate();
-}
-
-/// 在 reader 转交原始输出前观察 AI 退出标记。
-/// 参数：agent_foreground——AI 前台状态；data——本次原始输出；返回：无。
-fn observe_reader_chunk(agent_foreground: &mut AgentForeground, data: &[u8]) {
-    agent_foreground.observe_output(data);
-}
-
 /// 当前时刻的 RFC3339（UTC）字符串。
 /// 参数：无；返回：时间戳字符串。
 fn now_iso() -> String {
     chrono::Utc::now().to_rfc3339()
 }
 
-/// 校验任务提示的会话标识、AI 类型、真实前台状态和可注入状态。
-/// 参数：info——会话快照；session_id——提交会话标识；agent_active——AI 是否仍在前台；返回：成功或 AppError。
+/// 校验任务提示的会话标识、AI 类型和可注入状态。
+/// 参数：info——会话快照；session_id——提交会话标识；返回：成功或 AppError。
 pub(crate) fn validate_task_prompt_session(
     info: &PtySessionInfo,
     session_id: &str,
-    agent_active: bool,
 ) -> Result<(), AppError> {
     if info.session_id != session_id {
         return Err(AppError::Other("PTY 会话标识不匹配".to_string()));
@@ -449,11 +413,6 @@ pub(crate) fn validate_task_prompt_session(
     if !matches!(info.kind.as_str(), "claude" | "codex") {
         return Err(AppError::Other(
             "仅 Claude/Codex 会话可接收任务".to_string(),
-        ));
-    }
-    if !agent_active {
-        return Err(AppError::Other(
-            "AI 已退出并返回 Shell，当前会话不可注入".to_string(),
         ));
     }
     if matches!(info.state, SessionState::Waiting | SessionState::Dead) {
@@ -487,7 +446,30 @@ fn write_all_and_flush(writer: &mut dyn Write, data: &[u8]) -> Result<(), AppErr
     Ok(())
 }
 
-/// 根据解析后的启动描述构建 PTY 子进程命令并注入终端能力变量。
+/// 写入一次性初始命令；写入或刷新失败时先终止刚创建的子进程。
+/// 参数：writer——PTY 写入端；initial_command——不含回车的可选命令；terminate——失败清理回调；返回：成功或 AppError。
+fn write_initial_command_or_terminate<F>(
+    writer: &mut dyn Write,
+    initial_command: Option<&str>,
+    terminate: F,
+) -> Result<(), AppError>
+where
+    F: FnOnce(),
+{
+    let Some(command) = initial_command else {
+        return Ok(());
+    };
+    let mut input = Vec::with_capacity(command.len() + 1);
+    input.extend_from_slice(command.as_bytes());
+    input.push(b'\r');
+    if let Err(error) = write_all_and_flush(writer, &input) {
+        terminate();
+        return Err(error);
+    }
+    Ok(())
+}
+
+/// 根据解析后的启动描述构建原生 Shell 子进程命令。
 /// 参数：launch——程序、参数、目录与供应商环境；返回：可交给 PTY 启动的命令。
 fn build_command(launch: &ResolvedLaunch) -> CommandBuilder {
     let mut command = CommandBuilder::new(&launch.program);
@@ -495,9 +477,6 @@ fn build_command(launch: &ResolvedLaunch) -> CommandBuilder {
         command.arg(arg);
     }
     command.cwd(&launch.cwd);
-    for &(key, value) in &TERMINAL_ENVIRONMENT {
-        command.env(key, value);
-    }
     for (key, value) in &launch.env {
         command.env(key, value);
     }
@@ -507,18 +486,49 @@ fn build_command(launch: &ResolvedLaunch) -> CommandBuilder {
 #[cfg(test)]
 mod tests {
     use super::{
-        build_command, deactivate_task_injection, observe_reader_chunk,
-        validate_task_prompt_session, write_all_and_flush,
+        build_command, validate_task_prompt_session, write_all_and_flush,
+        write_initial_command_or_terminate,
     };
     use crate::config::model::{PtySessionInfo, SessionState};
-    use crate::pty::activity::{AgentForeground, AGENT_EXIT_SEQUENCE};
     use crate::pty::spawn::ResolvedLaunch;
     use std::ffi::OsStr;
     use std::io::{self, Write};
-    use std::sync::{Arc, Barrier};
-    use std::thread;
 
-    use parking_lot::Mutex;
+    /// 完整记录写入、刷新次数与交付字节的测试写入端。
+    struct RecordingWriter {
+        delivered: Vec<u8>,
+        writes: usize,
+        flushes: usize,
+    }
+
+    impl RecordingWriter {
+        /// 创建空的记录写入端。
+        /// 参数：无；返回：尚无写入记录的实例。
+        fn new() -> Self {
+            Self {
+                delivered: Vec::new(),
+                writes: 0,
+                flushes: 0,
+            }
+        }
+    }
+
+    impl Write for RecordingWriter {
+        /// 完整记录本次写入。
+        /// 参数：buffer——待写字节；返回：全部字节数。
+        fn write(&mut self, buffer: &[u8]) -> io::Result<usize> {
+            self.writes += 1;
+            self.delivered.extend_from_slice(buffer);
+            Ok(buffer.len())
+        }
+
+        /// 记录一次刷新。
+        /// 参数：无；返回：成功。
+        fn flush(&mut self) -> io::Result<()> {
+            self.flushes += 1;
+            Ok(())
+        }
+    }
 
     /// 首次只写部分字节、后续写入失败的测试写入端。
     struct PartialThenFailWriter {
@@ -605,10 +615,63 @@ mod tests {
         assert!(error.to_string().contains("刷新失败"));
     }
 
-    /// 验证已提前取得 Arc 的注入者在 kill 失效会话后仍被拒绝。
+    /// 验证 AI 初始命令只写入一次并只追加一个回车。
     /// 参数：无；返回：无，断言失败时由测试框架报告。
     #[test]
-    fn precloned_session_rejects_injection_after_deactivation() {
+    fn initial_command_is_written_once() {
+        let mut writer = RecordingWriter::new();
+        let mut terminate_count = 0usize;
+
+        write_initial_command_or_terminate(&mut writer, Some("codex 'resume' 'session-1'"), || {
+            terminate_count += 1
+        })
+        .expect("合法初始命令应写入成功");
+
+        assert_eq!(writer.delivered, b"codex 'resume' 'session-1'\r");
+        assert_eq!(writer.writes, 1);
+        assert_eq!(writer.flushes, 1);
+        assert_eq!(terminate_count, 0);
+    }
+
+    /// 验证纯 Shell 会话不产生任何初始输入。
+    /// 参数：无；返回：无，断言失败时由测试框架报告。
+    #[test]
+    fn shell_without_initial_command_writes_nothing() {
+        let mut writer = RecordingWriter::new();
+        let mut terminate_count = 0usize;
+
+        write_initial_command_or_terminate(&mut writer, None, || terminate_count += 1)
+            .expect("纯 Shell 不应写入初始命令");
+
+        assert!(writer.delivered.is_empty());
+        assert_eq!(writer.writes, 0);
+        assert_eq!(writer.flushes, 0);
+        assert_eq!(terminate_count, 0);
+    }
+
+    /// 验证初始命令写入失败时恰好终止一次刚创建的子进程。
+    /// 参数：无；返回：无，断言失败时由测试框架报告。
+    #[test]
+    fn initial_command_failure_terminates_child_once() {
+        let mut writer = PartialThenFailWriter::new();
+        let mut terminate_count = 0usize;
+
+        let error = write_initial_command_or_terminate(
+            &mut writer,
+            Some("claude --resume session-1"),
+            || terminate_count += 1,
+        )
+        .expect_err("部分写入失败必须终止子进程");
+
+        assert_eq!(writer.delivered, b"cla");
+        assert_eq!(terminate_count, 1);
+        assert!(error.to_string().contains("写入失败"));
+    }
+
+    /// 验证协作注入只校验真实会话属性，不依赖无法可靠识别的 AI 前台标记。
+    /// 参数：无；返回：无，断言失败时由测试框架报告。
+    #[test]
+    fn idle_ai_session_is_valid_without_private_foreground_signal() {
         let info = PtySessionInfo {
             session_id: "pty-1".to_string(),
             workspace_id: Some("project-1".to_string()),
@@ -619,55 +682,31 @@ mod tests {
             state: SessionState::Idle,
             created_at: "2026-07-15T00:00:00Z".to_string(),
         };
-        let session = Arc::new(Mutex::new((info, AgentForeground::new("codex"))));
-        let precloned = Arc::clone(&session);
-        let started = Arc::new(Barrier::new(2));
-        let waiter_started = Arc::clone(&started);
-        let mut session_guard = session.lock();
-        let waiter = thread::spawn(move || {
-            waiter_started.wait();
-            let session = precloned.lock();
-            validate_task_prompt_session(&session.0, "pty-1", session.1.is_active())
-        });
-        started.wait();
-        let (info, foreground) = &mut *session_guard;
-        deactivate_task_injection(info, foreground);
-        drop(session_guard);
 
-        assert!(waiter.join().expect("注入线程不应崩溃").is_err());
+        validate_task_prompt_session(&info, "pty-1").expect("idle AI 会话应允许人工确认后注入");
     }
 
-    /// 验证 reader 分块观察退出标记后，在转交 pump 前已关闭前台状态。
+    /// 验证实际启动命令不强制覆盖 Shell 的终端能力环境。
     /// 参数：无；返回：无，断言失败时由测试框架报告。
     #[test]
-    fn reader_observes_split_exit_marker_before_forwarding() {
-        let mut foreground = AgentForeground::new("claude");
-        let split = AGENT_EXIT_SEQUENCE.len() / 2;
-        let mut states_seen_before_forward = Vec::new();
-
-        observe_reader_chunk(&mut foreground, &AGENT_EXIT_SEQUENCE[..split]);
-        states_seen_before_forward.push(foreground.is_active());
-        observe_reader_chunk(&mut foreground, &AGENT_EXIT_SEQUENCE[split..]);
-        states_seen_before_forward.push(foreground.is_active());
-
-        assert_eq!(states_seen_before_forward, vec![true, false]);
-    }
-
-    /// 验证实际启动命令声明 ANSI 256 色与真彩色终端能力。
-    #[test]
-    fn command_enables_ansi_color_and_truecolor() {
+    fn command_preserves_shell_terminal_environment() {
         let launch = ResolvedLaunch {
             program: "powershell.exe".to_string(),
             args: Vec::new(),
             cwd: ".".to_string(),
-            env: Vec::new(),
+            env: vec![("OPENAI_API_KEY".to_string(), "test-key".to_string())],
             title: "PowerShell".to_string(),
             kind: "shell".to_string(),
             resumed_from: None,
+            initial_command: None,
         };
         let command = build_command(&launch);
 
-        assert_eq!(command.get_env("TERM"), Some(OsStr::new("xterm-256color")));
-        assert_eq!(command.get_env("COLORTERM"), Some(OsStr::new("truecolor")));
+        assert_eq!(command.get_env("TERM"), None);
+        assert_eq!(command.get_env("COLORTERM"), None);
+        assert_eq!(
+            command.get_env("OPENAI_API_KEY"),
+            Some(OsStr::new("test-key"))
+        );
     }
 }
