@@ -42,6 +42,7 @@ import {
 } from "./lib/providers";
 import { nativeConversationTabId, parseNativeConversationTabId } from "./lib/nativeConversation";
 import { workspaceIdForTab } from "./lib/workItems";
+import { pendingSessions } from "./lib/pendingSessions";
 
 const INIT_COLS = 80;
 const INIT_ROWS = 24;
@@ -55,14 +56,6 @@ function dispatchWorkspaceLocation(workspaceId: string): void {
   window.dispatchEvent(new CustomEvent("app:locate-workspace", { detail: workspaceId }));
 }
 
-/**
- * "待命名"会话注册表：spawn 后登记 ptySessionId→{workspaceId, kind}，
- * 等 TerminalPane 检测到用户首次按 Enter 时，以输入行作为名称创建 ManagedSession。
- */
-export const pendingSessions = new Map<
-  string,
-  { workspaceId: string; kind: string; providerId?: string }
->();
 const resumingIds = new Set<string>();
 
 type TerminalReleaseResult =

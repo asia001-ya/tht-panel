@@ -17,7 +17,7 @@ import { createTerm, tryLoadWebgl, unregisterTerm } from "./xtermManager";
 import { SearchBar } from "./SearchBar";
 import { ptyAttach, ptyWrite, ptyResize, ptyDetach } from "../api/commands";
 import { useSettingsStore } from "../store/settingsStore";
-import { pendingSessions } from "../App";
+import { pendingSessions } from "../lib/pendingSessions";
 
 /** TerminalPane 属性 */
 interface TerminalPaneProps {

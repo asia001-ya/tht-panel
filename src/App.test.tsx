@@ -16,7 +16,8 @@ import { useSessionStore } from "./store/sessionStore";
 import { useSettingsStore } from "./store/settingsStore";
 import { useWorkspaceStore } from "./store/workspaceStore";
 import { useTaskStore } from "./store/taskStore";
-import App, { pendingSessions } from "./App";
+import App from "./App";
+import { pendingSessions } from "./lib/pendingSessions";
 
 const commandMocks = vi.hoisted(() => ({
   aiSessionDetect: vi.fn(async () => null),
