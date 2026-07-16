@@ -30,7 +30,7 @@
 
 **背景:** `pendingSessions` 目前在 `src/App.tsx:62` 导出，Task 2 的 lib 模块若 import App 会形成循环依赖，先挪到独立模块。纯移动重构，不写新测试，靠既有测试回归。
 
-- [ ] **Step 1: 创建新模块**
+- [x] **Step 1: 创建新模块**
 
 ```ts
 /**
@@ -44,7 +44,7 @@ export const pendingSessions = new Map<
 >();
 ```
 
-- [ ] **Step 2: 改三处引用**
+- [x] **Step 2: 改三处引用**
 
 `src/App.tsx`：删除第 58-65 行的注释与 `export const pendingSessions = ...` 定义，在 import 区加 `import { pendingSessions } from "./lib/pendingSessions";`。
 
@@ -52,12 +52,12 @@ export const pendingSessions = new Map<
 
 `src/App.test.tsx:19`：`import App, { pendingSessions } from "./App";` → 拆为 `import App from "./App";` 与 `import { pendingSessions } from "./lib/pendingSessions";`
 
-- [ ] **Step 3: 回归验证**
+- [x] **Step 3: 回归验证**
 
 Run: `npm test -- src/App.test.tsx` → PASS
 Run: `npm run typecheck` → 无错误
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```bash
 git add src/lib/pendingSessions.ts src/App.tsx src/terminal/TerminalPane.tsx src/App.test.tsx
@@ -76,7 +76,7 @@ git commit -m "refactor: pendingSessions 挪至独立模块，消除 lib 循环�
   - `collectCurrentSessionRefs(): Record<string, SavedSessionRef>`（Task 3/4 消费）
   - `restoreWorkspaceById(savedWorkspaceId: string, onResumeRebound?: (managed: ManagedSession, spawnedAt: string) => void): Promise<{ restored: boolean; errorCount: number }>`（Task 4 消费）
 
-- [ ] **Step 1: 写失败测试**
+- [x] **Step 1: 写失败测试**
 
 `src/lib/workspaceRestore.test.ts`（与 `App.test.tsx` 同模式：vi.mock api/commands + setState stores）：
 
@@ -335,12 +335,12 @@ describe("restoreWorkspaceById", () => {
 });
 ```
 
-- [ ] **Step 2: 运行确认 RED**
+- [x] **Step 2: 运行确认 RED**
 
 Run: `npm test -- src/lib/workspaceRestore.test.ts`
 Expected: FAIL（模块不存在）
 
-- [ ] **Step 3: 最小实现**
+- [x] **Step 3: 最小实现**
 
 `src/lib/workspaceRestore.ts`：
 
@@ -534,12 +534,12 @@ export async function restoreWorkspaceById(
 
 注意：“历史刷新失败”测试里两个 Tab 都会因 `failedWorkspaceIds` 或 runtime/managed 缺失得到 error 动作——若实测中 `planWorkspaceRestore` 对无 `managedSessionId` 的 ref 不检查 failedWorkspaceIds，请回读 `src/lib/workspaceSnapshots.ts:362`（仅 `ref.managedSessionId` 存在时才检查），本测试的 refs 均带 `managedSessionId`，成立。
 
-- [ ] **Step 4: 运行确认 GREEN**
+- [x] **Step 4: 运行确认 GREEN**
 
 Run: `npm test -- src/lib/workspaceRestore.test.ts`
 Expected: PASS
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add src/lib/workspaceRestore.ts src/lib/workspaceRestore.test.ts
@@ -558,7 +558,7 @@ git commit -m "feat: 保存工作区的会话恢复编排（keep/native/spawn/er
   - `persist()` 行为扩展：debounce 到期时若 `activeSavedWorkspaceId` 非空且 provider 已注册，先把 `{tree, activePaneId, sessionRefs}` 写回激活工作区再落盘
   - `openSessionInLeaf` / `activateTab` / `closeTab` / `replaceSession` 在 `activeSavedWorkspaceId` 非空时触发 `persist()`
 
-- [ ] **Step 1: 写失败测试**
+- [x] **Step 1: 写失败测试**
 
 在 `src/store/layoutStore.test.ts` 追加（沿用该文件既有的 layoutSave mock 与 store 重置模式；`vi.useFakeTimers()` 推进 300ms debounce；若文件尚未用 fake timers，则在新测试内局部 `vi.useFakeTimers()` / `vi.useRealTimers()`）：
 
@@ -621,12 +621,12 @@ describe("激活工作区自动同步", () => {
 
 import 区补 `registerActiveWorkspaceRefsProvider`。
 
-- [ ] **Step 2: 运行确认 RED**
+- [x] **Step 2: 运行确认 RED**
 
 Run: `npm test -- src/store/layoutStore.test.ts`
 Expected: FAIL（`registerActiveWorkspaceRefsProvider` 不存在）
 
-- [ ] **Step 3: 最小实现**
+- [x] **Step 3: 最小实现**
 
 `src/store/layoutStore.ts`：
 
@@ -685,12 +685,12 @@ export function registerActiveWorkspaceRefsProvider(
 
 （`openSessionInLeaf` 有两处 `set`，都要加。）
 
-- [ ] **Step 4: 运行确认 GREEN**
+- [x] **Step 4: 运行确认 GREEN**
 
 Run: `npm test -- src/store/layoutStore.test.ts src/App.test.tsx`
 Expected: PASS（App 测试回归确认 Tab 操作触发 persist 不破坏既有编排）
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add src/store/layoutStore.ts src/store/layoutStore.test.ts
@@ -710,7 +710,7 @@ git commit -m "feat: 激活工作区随布局与 Tab 变动自动写回"
 - Consumes: `collectCurrentSessionRefs` / `restoreWorkspaceById`（Task 2）、`registerActiveWorkspaceRefsProvider`（Task 3）
 - Produces: `SidebarProps` 新增 `onRestoreWorkspace: (savedWorkspaceId: string) => void`；移除顶部「保存当前工作区」导航按钮
 
-- [ ] **Step 1: 写失败测试**
+- [x] **Step 1: 写失败测试**
 
 `src/components/Sidebar/Sidebar.test.tsx`：
 
@@ -829,12 +829,12 @@ describe("Sidebar 工作区", () => {
 });
 ```
 
-- [ ] **Step 2: 运行确认 RED**
+- [x] **Step 2: 运行确认 RED**
 
 Run: `npm test -- src/components/Sidebar/Sidebar.test.tsx`
 Expected: FAIL（无 `onRestoreWorkspace` prop、无「新建工作区」按钮）
 
-- [ ] **Step 3: 实现 Sidebar**
+- [x] **Step 3: 实现 Sidebar**
 
 `src/components/Sidebar/Sidebar.tsx`：
 
@@ -918,7 +918,7 @@ Expected: FAIL（无 `onRestoreWorkspace` prop、无「新建工作区」按钮�
 }
 ```
 
-- [ ] **Step 4: 实现 App 接线**
+- [x] **Step 4: 实现 App 接线**
 
 `src/App.tsx`：
 
@@ -975,12 +975,12 @@ import { collectCurrentSessionRefs, restoreWorkspaceById } from "./lib/workspace
 - 「释放期间切换保存工作区……」：走新编排。快照无 sessionRefs 且 `native:restored-tab` 在 historyCache 中无对应 managed 会话 → error 动作（`setRestoreError` + 恢复失败 toast）。error 动作不修改树，原断言（树为 `restored-split`、sessionIds 保留、`窗格内容已变化` toast 最终覆盖恢复失败 toast）仍全部成立，无需改动。
 - 「恢复保存工作区时不终止当前 PTY」：改为 `await waitFor(() => expect(useLayoutStore.getState().tree.id).toBe(leaf.id));`（编排异步），`ptyKill` 不被调用断言保留；测试改成 `async`。
 
-- [ ] **Step 5: 运行确认 GREEN**
+- [x] **Step 5: 运行确认 GREEN**
 
 Run: `npm test -- src/components/Sidebar/Sidebar.test.tsx src/App.test.tsx`
 Expected: PASS
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add src/components/Sidebar/Sidebar.tsx src/components/Sidebar/Sidebar.test.tsx src/App.tsx src/App.test.tsx src/styles/sidebar.css
@@ -997,7 +997,7 @@ git commit -m "feat: 工作区新建即激活，点击恢复布局与会话"
 **Interfaces:**
 - Consumes: `useLayoutStore` 的 `restoreErrors` / `setRestoreError`（已存在）
 
-- [ ] **Step 1: 写失败测试**
+- [x] **Step 1: 写失败测试**
 
 `src/components/PaneGrid/PaneGrid.test.tsx` 追加（沿用文件内既有 store 重置模式）：
 
@@ -1019,12 +1019,12 @@ git commit -m "feat: 工作区新建即激活，点击恢复布局与会话"
 
 （`renderGrid` 为该文件既有渲染帮助函数；若名称不同以实际为准，布局需含 id 为 `leaf-1` 的叶子。）
 
-- [ ] **Step 2: 运行确认 RED**
+- [x] **Step 2: 运行确认 RED**
 
 Run: `npm test -- src/components/PaneGrid/PaneGrid.test.tsx`
 Expected: FAIL（无 alert 渲染）
 
-- [ ] **Step 3: 最小实现**
+- [x] **Step 3: 最小实现**
 
 `src/components/PaneGrid/PaneLeaf.tsx`：
 
@@ -1078,12 +1078,12 @@ Expected: FAIL（无 alert 渲染）
 }
 ```
 
-- [ ] **Step 4: 运行确认 GREEN**
+- [x] **Step 4: 运行确认 GREEN**
 
 Run: `npm test -- src/components/PaneGrid/PaneGrid.test.tsx`
 Expected: PASS
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add src/components/PaneGrid/PaneLeaf.tsx src/components/PaneGrid/PaneGrid.test.tsx src/styles/main.css
@@ -1101,7 +1101,7 @@ git commit -m "feat: 窗格内显示会话恢复错误占位"
 **Interfaces:**
 - Consumes: lucide-react `Folder` / `FolderOpen`
 
-- [ ] **Step 1: 写失败测试**
+- [x] **Step 1: 写失败测试**
 
 `src/components/Sidebar/WorkspaceItem.test.tsx` 追加（文件已有 render 帮助模式，SessionHistoryList 需 mock 以聚焦容器行为）：
 
@@ -1156,12 +1156,12 @@ vi.mock("./SessionHistoryList", () => ({
 
 注：`useWorkspaceStore.setState` 需包在 `act(...)` 中（`@testing-library/react` 的 `act` 已可 import）。
 
-- [ ] **Step 2: 运行确认 RED**
+- [x] **Step 2: 运行确认 RED**
 
 Run: `npm test -- src/components/Sidebar/WorkspaceItem.test.tsx`
 Expected: FAIL（当前是 ChevronRight，且历史列表条件卸载）
 
-- [ ] **Step 3: 最小实现**
+- [x] **Step 3: 最小实现**
 
 `src/components/ui/icons.ts` 导出列表加 `Folder, FolderOpen,`。
 
@@ -1242,12 +1242,12 @@ Expected: FAIL（当前是 ChevronRight，且历史列表条件卸载）
 }
 ```
 
-- [ ] **Step 4: 运行确认 GREEN**
+- [x] **Step 4: 运行确认 GREEN**
 
 Run: `npm test -- src/components/Sidebar/WorkspaceItem.test.tsx`
 Expected: PASS
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add src/components/ui/icons.ts src/components/Sidebar/WorkspaceItem.tsx src/components/Sidebar/WorkspaceItem.test.tsx src/styles/sidebar.css
@@ -1256,13 +1256,13 @@ git commit -m "feat: 项目行文件夹图标与会话历史风琴动画"
 
 ### Task 7: 全量验证
 
-- [ ] **Step 1: 全量测试与构建**
+- [x] **Step 1: 全量测试与构建**
 
 Run: `npm test` → 全部 PASS
 Run: `npm run typecheck` → 无错误
 Run: `npm run build` → 成功
 Run: `git diff --check` → 干净
 
-- [ ] **Step 2: 手工验收（提示用户）**
+- [x] **Step 2: 手工验收（提示用户）**
 
 提示用户按设计文档验收：开两个 AI 会话 → 「工作区」组「+」新建 → 关闭其中一个 PTY → 点击该工作区：存活会话原位、关闭的以 resume 重建；拖分屏/开关 Tab 后重启应用确认自动同步已落盘；检查文件夹图标、间距与风琴动画。
