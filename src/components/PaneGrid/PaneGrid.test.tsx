@@ -688,3 +688,19 @@ describe("PaneGrid 分隔比例", () => {
     ).toEqual(["10", "10"]);
   });
 });
+
+describe("PaneGrid 恢复错误占位", () => {
+  it("窗格存在恢复错误时显示占位并可手动清除", () => {
+    useLayoutStore.setState({
+      restoreErrors: { "leaf-left": "供应商不存在：p-1" },
+    });
+    renderPaneGrid();
+
+    expect(screen.getByRole("alert").textContent).toContain("供应商不存在：p-1");
+
+    fireEvent.click(screen.getByRole("button", { name: "知道了" }));
+
+    expect(useLayoutStore.getState().restoreErrors["leaf-left"]).toBeUndefined();
+    expect(screen.queryByRole("alert")).toBeNull();
+  });
+});

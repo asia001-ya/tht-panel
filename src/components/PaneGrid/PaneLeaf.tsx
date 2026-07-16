@@ -151,6 +151,8 @@ export function PaneLeaf({
 }: PaneLeafProps): React.ReactElement {
   const activePaneId = useLayoutStore((s) => s.activePaneId);
   const activeSavedWorkspaceId = useLayoutStore((s) => s.activeSavedWorkspaceId);
+  const restoreError = useLayoutStore((s) => s.restoreErrors[leaf.id]);
+  const setRestoreError = useLayoutStore((s) => s.setRestoreError);
   const setActive = useLayoutStore((s) => s.setActive);
   const toggleLock = useLayoutStore((s) => s.toggleLock);
   const splitPane = useLayoutStore((s) => s.splitPane);
@@ -348,6 +350,18 @@ export function PaneLeaf({
       </div>
 
       <div className="pane-body">
+        {restoreError && (
+          <div className="pane-restore-error" role="alert">
+            <span>会话恢复失败：{restoreError}</span>
+            <button
+              type="button"
+              className="pane-restore-error-dismiss"
+              onClick={() => setRestoreError(leaf.id, null)}
+            >
+              知道了
+            </button>
+          </div>
+        )}
         {nativeConversationId ? (
           <NativeChatPaneHost conversationId={nativeConversationId} />
         ) : leaf.activeSessionId ? (
