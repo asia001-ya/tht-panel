@@ -13,7 +13,7 @@ const commandMocks = vi.hoisted(() => ({
 
 vi.mock("../api/commands", () => commandMocks);
 
-import { useLayoutStore } from "./layoutStore";
+import { registerActiveWorkspaceRefsProvider, useLayoutStore } from "./layoutStore";
 
 const originalLoad = useLayoutStore.getState().load;
 const originalPersist = useLayoutStore.getState().persist;
@@ -243,5 +243,54 @@ describe("布局状态", () => {
 
     useLayoutStore.getState().setRestoreError("left", null);
     expect(useLayoutStore.getState().restoreErrors).toEqual({});
+  });
+});
+
+describe("激活工作区自动同步", () => {
+  it("persist 到期时把当前布局与会话引用写回激活工作区", () => {
+    const sessionRefs: Record<string, SavedSessionRef> = {
+      "pty-1": {
+        workspaceId: "workspace-1",
+        kind: "claude",
+        mode: "terminal",
+      },
+    };
+    registerActiveWorkspaceRefsProvider(() => sessionRefs);
+    try {
+      const saved = useLayoutStore.getState().saveCurrentWorkspace("自动同步");
+      if (!saved) throw new Error("应创建保存工作区");
+      useLayoutStore.getState().openSessionInLeaf("right", "pty-1");
+      vi.advanceTimersByTime(300);
+
+      const updated = useLayoutStore.getState().savedWorkspaces
+        .find((item) => item.id === saved.id);
+      if (!updated || updated.tree.type !== "split") throw new Error("快照应为分屏");
+      const right = updated.tree.children[1];
+      if (right.type !== "leaf") throw new Error("右侧节点必须是 leaf");
+      expect(right.sessionIds).toEqual(["pty-1"]);
+      expect(updated.sessionRefs).toEqual(sessionRefs);
+    } finally {
+      registerActiveWorkspaceRefsProvider(null);
+    }
+  });
+
+  it("无激活工作区时 Tab 操作不写回任何快照", () => {
+    registerActiveWorkspaceRefsProvider(() => ({}));
+    try {
+      const saved = useLayoutStore.getState().saveCurrentWorkspace("非激活");
+      if (!saved) throw new Error("应创建保存工作区");
+      useLayoutStore.setState({ activeSavedWorkspaceId: null });
+      useLayoutStore.getState().openSessionInLeaf("right", "pty-1");
+      vi.advanceTimersByTime(300);
+
+      const kept = useLayoutStore.getState().savedWorkspaces
+        .find((item) => item.id === saved.id);
+      if (!kept || kept.tree.type !== "split") throw new Error("快照应为分屏");
+      const right = kept.tree.children[1];
+      if (right.type !== "leaf") throw new Error("右侧节点必须是 leaf");
+      expect(right.sessionIds).toEqual([]);
+    } finally {
+      registerActiveWorkspaceRefsProvider(null);
+    }
   });
 });

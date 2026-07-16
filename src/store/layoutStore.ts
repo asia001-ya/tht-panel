@@ -25,6 +25,19 @@ import {
 
 let persistTimer: ReturnType<typeof setTimeout> | null = null;
 
+let activeWorkspaceRefsProvider: (() => Record<string, SavedSessionRef>) | null = null;
+
+/**
+ * 注册激活工作区写回时的会话引用提供者。
+ * @param provider 构建当前稳定会话引用的函数；null 表示注销。
+ * @returns 无返回值。
+ */
+export function registerActiveWorkspaceRefsProvider(
+  provider: (() => Record<string, SavedSessionRef>) | null,
+): void {
+  activeWorkspaceRefsProvider = provider;
+}
+
 const LAYOUT_VERSION = 1;
 
 /**
@@ -243,12 +256,27 @@ export const useLayoutStore = create<LayoutState>((set, get) => ({
     persistTimer = setTimeout(() => {
       persistTimer = null;
       const { tree, activePaneId, activeSavedWorkspaceId, savedWorkspaces } = get();
+      let nextSavedWorkspaces = savedWorkspaces;
+      // 激活工作区随最新布局与会话引用自动写回（活文档语义）
+      if (activeSavedWorkspaceId && activeWorkspaceRefsProvider) {
+        nextSavedWorkspaces = savedWorkspaces.map((item) =>
+          item.id === activeSavedWorkspaceId
+            ? createSavedWorkspaceSnapshot({
+                ...item,
+                tree,
+                activePaneId,
+                sessionRefs: activeWorkspaceRefsProvider(),
+              })
+            : item,
+        );
+        set({ savedWorkspaces: nextSavedWorkspaces });
+      }
       void layoutSave({
         version: LAYOUT_VERSION,
         tree: toPersisted(tree),
         activePaneId,
         activeSavedWorkspaceId: activeSavedWorkspaceId ?? undefined,
-        savedWorkspaces,
+        savedWorkspaces: nextSavedWorkspaces,
       });
     }, 300);
   },
@@ -319,6 +347,7 @@ export const useLayoutStore = create<LayoutState>((set, get) => ({
         activeSessionId: sessionId,
       }));
       set({ tree });
+      if (get().activeSavedWorkspaceId) get().persist();
       return;
     }
     // 追加新 Tab 并激活
@@ -328,6 +357,7 @@ export const useLayoutStore = create<LayoutState>((set, get) => ({
       activeSessionId: sessionId,
     }));
     set({ tree });
+    if (get().activeSavedWorkspaceId) get().persist();
   },
 
   activateTab: (leafId, sessionId) => {
@@ -340,6 +370,7 @@ export const useLayoutStore = create<LayoutState>((set, get) => ({
       activeSessionId: sessionId,
     }));
     set({ tree });
+    if (get().activeSavedWorkspaceId) get().persist();
   },
 
   closeTab: (leafId, sessionId) => {
@@ -354,6 +385,7 @@ export const useLayoutStore = create<LayoutState>((set, get) => ({
       return { ...leaf, sessionIds: rest, activeSessionId: nextActive };
     });
     set({ tree });
+    if (get().activeSavedWorkspaceId) get().persist();
   },
 
   findLeafBySession: (sessionId) => {
@@ -394,7 +426,10 @@ export const useLayoutStore = create<LayoutState>((set, get) => ({
   replaceSession: (leafId, oldId, newId) => {
     const currentTree = get().tree;
     const tree = replaceLeafSession(currentTree, leafId, oldId, newId);
-    if (tree !== currentTree) set({ tree });
+    if (tree !== currentTree) {
+      set({ tree });
+      if (get().activeSavedWorkspaceId) get().persist();
+    }
   },
 
   /** 设置恢复错误；参数为窗格 ID 与可空错误文案，无返回值。 */
