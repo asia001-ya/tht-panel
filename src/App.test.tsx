@@ -257,11 +257,13 @@ vi.mock("./components/Sidebar/Sidebar", () => ({
     onLocateWorkspaceHandled,
     onResume,
     onNewSession,
+    onRestoreWorkspace,
   }: {
     locateWorkspaceId: string | null;
     onLocateWorkspaceHandled?: () => void;
     onResume: (workspaceId: string, session: ManagedSession) => void;
     onNewSession: (workspaceId: string) => void;
+    onRestoreWorkspace: (savedWorkspaceId: string) => void;
   }) => {
     useEffect(() => {
       if (locateWorkspaceId) {
@@ -283,7 +285,7 @@ vi.mock("./components/Sidebar/Sidebar", () => ({
         </button>
         <button
           type="button"
-          onClick={() => useLayoutStore.getState().restoreSavedWorkspace("saved-layout")}
+          onClick={() => onRestoreWorkspace("saved-layout")}
         >
           恢复保存工作区
         </button>
@@ -790,12 +792,12 @@ describe("App 关闭会话生命周期", () => {
     expect(screen.getByText("终端已关闭，但历史同步失败：历史服务离线")).toBeTruthy();
   });
 
-  it("恢复保存工作区时不终止当前 PTY", () => {
+  it("恢复保存工作区时不终止当前 PTY", async () => {
     renderApp();
 
     fireEvent.click(screen.getByRole("button", { name: "恢复保存工作区" }));
 
-    expect(useLayoutStore.getState().tree.id).toBe(leaf.id);
+    await waitFor(() => expect(useLayoutStore.getState().tree.id).toBe(leaf.id));
     expect(commandMocks.ptyKill).not.toHaveBeenCalled();
   });
 

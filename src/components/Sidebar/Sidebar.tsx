@@ -7,13 +7,14 @@ import type { ManagedSession } from "../../api/types";
 import { useWorkspaceStore } from "../../store/workspaceStore";
 import { useUiStore } from "../../store/uiStore";
 import { useLayoutStore } from "../../store/layoutStore";
+import { collectCurrentSessionRefs } from "../../lib/workspaceRestore";
 import { WorkspaceItem } from "./WorkspaceItem";
 import { SidebarNavItem } from "./SidebarNavItem";
 import { RecentSessionList } from "./RecentSessionList";
 import { SidebarFooter } from "./SidebarFooter";
 import {
   LayoutTemplate,
-  Save,
+  Plus,
   Search,
   SquarePen,
   SquareTerminal,
@@ -28,6 +29,7 @@ export interface SidebarProps {
   onNewShell: (wsId: string) => void;
   onNewSession: (wsId: string) => void;
   onQuickShell: () => void;
+  onRestoreWorkspace: (savedWorkspaceId: string) => void;
 }
 
 /**
@@ -46,19 +48,19 @@ function scrollWorkspaceIntoView(workspaceId: string): void {
  * @param props 定位目标以及会话、Shell 与快捷终端操作回调。
  * @returns 侧边栏界面。
  */
-export function Sidebar({ locateWorkspaceId, onLocateWorkspaceHandled, onResume, onNewShell, onNewSession, onQuickShell }: SidebarProps): React.JSX.Element {
+export function Sidebar({ locateWorkspaceId, onLocateWorkspaceHandled, onResume, onNewShell, onNewSession, onQuickShell, onRestoreWorkspace }: SidebarProps): React.JSX.Element {
   const workspaces = useWorkspaceStore((s) => s.workspaces);
   const loadWorkspaces = useWorkspaceStore((s) => s.load);
   const loadAllHistories = useWorkspaceStore((s) => s.loadAllHistories);
   const openWorkspaceDialog = useUiStore((s) => s.openWorkspaceDialog);
   const savedWorkspaces = useLayoutStore((s) => s.savedWorkspaces);
+  const activeSavedWorkspaceId = useLayoutStore((s) => s.activeSavedWorkspaceId);
   const saveCurrentWorkspace = useLayoutStore((s) => s.saveCurrentWorkspace);
-  const restoreSavedWorkspace = useLayoutStore((s) => s.restoreSavedWorkspace);
   const removeSavedWorkspace = useLayoutStore((s) => s.removeSavedWorkspace);
 
   const [searchOpen, setSearchOpen] = useState(false);
   const [filter, setFilter] = useState("");
-  const [savingWorkspace, setSavingWorkspace] = useState(false);
+  const [creatingWorkspace, setCreatingWorkspace] = useState(false);
   const [workspaceName, setWorkspaceName] = useState("");
 
   useEffect(() => {
@@ -118,47 +120,7 @@ export function Sidebar({ locateWorkspaceId, onLocateWorkspaceHandled, onResume,
           label="新开终端"
           onClick={onQuickShell}
         />
-        <SidebarNavItem
-          icon={<Save {...ICON_DEFAULTS} />}
-          label="保存当前工作区"
-          onClick={() => setSavingWorkspace(true)}
-        />
       </nav>
-
-      {savingWorkspace && (
-        <div className="sidebar-save-workspace">
-          <input
-            className="sidebar-search-input"
-            value={workspaceName}
-            placeholder="工作区名称"
-            autoFocus
-            onChange={(event) => setWorkspaceName(event.target.value)}
-            onKeyDown={(event) => {
-              if (event.key === "Escape") {
-                setSavingWorkspace(false);
-                setWorkspaceName("");
-              }
-              if (event.key === "Enter" && workspaceName.trim()) {
-                saveCurrentWorkspace(workspaceName);
-                setSavingWorkspace(false);
-                setWorkspaceName("");
-              }
-            }}
-          />
-          <button
-            type="button"
-            className="sidebar-save-confirm"
-            disabled={!workspaceName.trim()}
-            onClick={() => {
-              saveCurrentWorkspace(workspaceName);
-              setSavingWorkspace(false);
-              setWorkspaceName("");
-            }}
-          >
-            保存
-          </button>
-        </div>
-      )}
 
       {/* 搜索框 */}
       {searchOpen && (
@@ -202,7 +164,40 @@ export function Sidebar({ locateWorkspaceId, onLocateWorkspaceHandled, onResume,
           ))
         )}
 
-        <div className="sidebar-group-title">工作区</div>
+        <div className="sidebar-group-title sidebar-group-title-row">
+          <span>工作区</span>
+          <button
+            type="button"
+            className="sidebar-group-add"
+            aria-label="新建工作区"
+            title="以当前布局新建工作区"
+            onClick={() => setCreatingWorkspace(true)}
+          >
+            <Plus size={13} strokeWidth={1.5} />
+          </button>
+        </div>
+        {creatingWorkspace && (
+          <div className="sidebar-save-workspace">
+            <input
+              className="sidebar-search-input"
+              value={workspaceName}
+              placeholder="工作区名称"
+              autoFocus
+              onChange={(event) => setWorkspaceName(event.target.value)}
+              onKeyDown={(event) => {
+                if (event.key === "Escape") {
+                  setCreatingWorkspace(false);
+                  setWorkspaceName("");
+                }
+                if (event.key === "Enter" && workspaceName.trim()) {
+                  saveCurrentWorkspace(workspaceName, collectCurrentSessionRefs());
+                  setCreatingWorkspace(false);
+                  setWorkspaceName("");
+                }
+              }}
+            />
+          </div>
+        )}
         {savedWorkspaces.length === 0 ? (
           <div className="sidebar-empty sidebar-empty-compact">暂无已保存工作区</div>
         ) : (
@@ -211,8 +206,10 @@ export function Sidebar({ locateWorkspaceId, onLocateWorkspaceHandled, onResume,
               <div className="saved-workspace-row" key={saved.id}>
                 <button
                   type="button"
-                  className="saved-workspace-open"
-                  onClick={() => restoreSavedWorkspace(saved.id)}
+                  className={`saved-workspace-open${
+                    saved.id === activeSavedWorkspaceId ? " saved-workspace-open-active" : ""
+                  }`}
+                  onClick={() => onRestoreWorkspace(saved.id)}
                   title={saved.name}
                 >
                   <LayoutTemplate size={14} strokeWidth={1.5} />

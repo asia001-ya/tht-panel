@@ -21,7 +21,7 @@ import { useHotkeys } from "./hooks/useHotkeys";
 import { useTheme } from "./hooks/useTheme";
 import { useSettingsStore } from "./store/settingsStore";
 import { useWorkspaceStore } from "./store/workspaceStore";
-import { useLayoutStore, preorderLeaves } from "./store/layoutStore";
+import { useLayoutStore, preorderLeaves, registerActiveWorkspaceRefsProvider } from "./store/layoutStore";
 import { useSessionStore } from "./store/sessionStore";
 import { useUiStore } from "./store/uiStore";
 import { useTaskStore } from "./store/taskStore";
@@ -43,6 +43,7 @@ import {
 import { nativeConversationTabId, parseNativeConversationTabId } from "./lib/nativeConversation";
 import { workspaceIdForTab } from "./lib/workItems";
 import { pendingSessions } from "./lib/pendingSessions";
+import { collectCurrentSessionRefs, restoreWorkspaceById } from "./lib/workspaceRestore";
 
 const INIT_COLS = 80;
 const INIT_ROWS = 24;
@@ -637,12 +638,34 @@ export default function App(): React.JSX.Element {
     void newShell(wsId);
   }, [newShell, showToast]);
 
+  /**
+   * 恢复保存工作区：布局与会话一并恢复，错误汇总为 toast。
+   * @param savedWorkspaceId 保存工作区 ID。
+   * @returns 恢复流程完成后解析。
+   */
+  const restoreWorkspace = useCallback(async (savedWorkspaceId: string): Promise<void> => {
+    if (useLayoutStore.getState().activeSavedWorkspaceId === savedWorkspaceId) return;
+    const result = await restoreWorkspaceById(
+      savedWorkspaceId,
+      (managed, spawnedAt) => scheduleAiDetect(managed, spawnedAt, [5000, 15000]),
+    );
+    if (result.errorCount > 0) {
+      showToast(`${result.errorCount} 个会话恢复失败，详见窗格提示`);
+    }
+  }, [showToast]);
+
   // 启动
   useEffect(() => {
     void useSettingsStore.getState().load();
     void useWorkspaceStore.getState().load();
     void useLayoutStore.getState().load();
     void useSessionStore.getState().syncFromBackend();
+  }, []);
+
+  // 注册激活工作区写回的会话引用提供者
+  useEffect(() => {
+    registerActiveWorkspaceRefsProvider(collectCurrentSessionRefs);
+    return () => registerActiveWorkspaceRefsProvider(null);
   }, []);
 
   // 用户首次 Enter → 创建 ManagedSession
@@ -741,6 +764,7 @@ export default function App(): React.JSX.Element {
             onNewShell={newShell}
             onNewSession={newSession}
             onQuickShell={quickShell}
+            onRestoreWorkspace={(id) => void restoreWorkspace(id)}
           />
           <div className="sidebar-resizer" onMouseDown={startSidebarDrag} />
         </>

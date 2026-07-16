@@ -520,3 +520,28 @@
   background: var(--hover);
   color: var(--fg);
 }
+
+/* 工作区分组标题行与新建按钮 */
+.sidebar-group-title-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+.sidebar-group-add {
+  display: flex;
+  align-items: center;
+  padding: 2px;
+  background: transparent;
+  border: none;
+  color: var(--fg-faint);
+  cursor: pointer;
+  border-radius: 4px;
+}
+.sidebar-group-add:hover {
+  background: var(--sidebar-hover);
+  color: var(--fg);
+}
+.saved-workspace-open-active {
+  color: var(--fg);
+  font-weight: 600;
+}
