@@ -13,7 +13,11 @@ const commandMocks = vi.hoisted(() => ({
 
 vi.mock("../api/commands", () => commandMocks);
 
-import { registerActiveWorkspaceRefsProvider, useLayoutStore } from "./layoutStore";
+import {
+  registerActiveWorkspaceRefsProvider,
+  setActiveWorkspaceSyncSuspended,
+  useLayoutStore,
+} from "./layoutStore";
 
 const originalLoad = useLayoutStore.getState().load;
 const originalPersist = useLayoutStore.getState().persist;
@@ -289,6 +293,92 @@ describe("激活工作区自动同步", () => {
       const right = kept.tree.children[1];
       if (right.type !== "leaf") throw new Error("右侧节点必须是 leaf");
       expect(right.sessionIds).toEqual([]);
+    } finally {
+      registerActiveWorkspaceRefsProvider(null);
+    }
+  });
+
+  it("应用重启后的空骨架树不覆盖激活工作区快照", async () => {
+    registerActiveWorkspaceRefsProvider(() => ({}));
+    try {
+      const richSnapshot: SavedWorkspaceLayout = {
+        id: "saved-rich",
+        name: "有会话的工作区",
+        tree: {
+          type: "leaf",
+          id: "leaf-rich",
+          sessionIds: ["pty-1"],
+          activeSessionId: "pty-1",
+          locked: false,
+        },
+        activePaneId: "leaf-rich",
+        createdAt: "2026-07-16T08:00:00.000Z",
+        sessionRefs: {
+          "pty-1": {
+            managedSessionId: "managed-1",
+            workspaceId: "workspace-1",
+            kind: "claude",
+            mode: "terminal",
+          },
+        },
+      };
+      // 模拟重启：持久化布局只有骨架（sessionIds 清空），激活工作区仍指向富快照
+      commandMocks.layoutGet.mockResolvedValue({
+        version: 1,
+        tree: { type: "leaf", id: "leaf-rich", locked: false },
+        activePaneId: "leaf-rich",
+        activeSavedWorkspaceId: "saved-rich",
+        savedWorkspaces: [richSnapshot],
+      } satisfies PersistedLayout);
+      await useLayoutStore.getState().load();
+
+      // 重启后的第一次 persist（任何布局操作都会触发）
+      useLayoutStore.getState().persist();
+      vi.advanceTimersByTime(300);
+
+      const kept = useLayoutStore.getState().savedWorkspaces
+        .find((item) => item.id === "saved-rich");
+      if (!kept || kept.tree.type !== "leaf") throw new Error("快照应为单叶");
+      expect(kept.tree.sessionIds).toEqual(["pty-1"]);
+      expect(kept.sessionRefs).toEqual(richSnapshot.sessionRefs);
+    } finally {
+      registerActiveWorkspaceRefsProvider(null);
+    }
+  });
+
+  it("暂停写回期间 persist 不修改激活工作区快照", () => {
+    registerActiveWorkspaceRefsProvider(() => ({}));
+    try {
+      const saved = useLayoutStore.getState().saveCurrentWorkspace("恢复中");
+      if (!saved) throw new Error("应创建保存工作区");
+      vi.advanceTimersByTime(300);
+
+      setActiveWorkspaceSyncSuspended(true);
+      useLayoutStore.getState().openSessionInLeaf("right", "pty-restoring");
+      useLayoutStore.getState().persist();
+      vi.advanceTimersByTime(300);
+
+      const duringSuspend = useLayoutStore.getState().savedWorkspaces
+        .find((item) => item.id === saved.id);
+      if (!duringSuspend || duringSuspend.tree.type !== "split") {
+        throw new Error("快照应为分屏");
+      }
+      const right = duringSuspend.tree.children[1];
+      if (right.type !== "leaf") throw new Error("右侧节点必须是 leaf");
+      expect(right.sessionIds).toEqual([]);
+
+      setActiveWorkspaceSyncSuspended(false);
+      useLayoutStore.getState().persist();
+      vi.advanceTimersByTime(300);
+
+      const afterResume = useLayoutStore.getState().savedWorkspaces
+        .find((item) => item.id === saved.id);
+      if (!afterResume || afterResume.tree.type !== "split") {
+        throw new Error("快照应为分屏");
+      }
+      const rightAfter = afterResume.tree.children[1];
+      if (rightAfter.type !== "leaf") throw new Error("右侧节点必须是 leaf");
+      expect(rightAfter.sessionIds).toEqual(["pty-restoring"]);
     } finally {
       registerActiveWorkspaceRefsProvider(null);
     }

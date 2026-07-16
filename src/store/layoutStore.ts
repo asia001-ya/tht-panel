@@ -27,6 +27,15 @@ let persistTimer: ReturnType<typeof setTimeout> | null = null;
 
 let activeWorkspaceRefsProvider: (() => Record<string, SavedSessionRef>) | null = null;
 
+/** 恢复编排等多步操作期间置 true，避免把半成品状态写回激活工作区。 */
+let activeWorkspaceSyncSuspended = false;
+
+/**
+ * 运行时树是否已被会话级操作触碰。load() 产出的骨架树 sessionIds 恒为空，
+ * 在触碰前写回会把激活工作区的会话引用抹成空，因此作为写回的前置条件。
+ */
+let sessionTreeTouched = false;
+
 /**
  * 注册激活工作区写回时的会话引用提供者。
  * @param provider 构建当前稳定会话引用的函数；null 表示注销。
@@ -36,6 +45,15 @@ export function registerActiveWorkspaceRefsProvider(
   provider: (() => Record<string, SavedSessionRef>) | null,
 ): void {
   activeWorkspaceRefsProvider = provider;
+}
+
+/**
+ * 暂停或恢复激活工作区的自动写回。
+ * @param suspended true 表示暂停写回（恢复编排执行中），false 表示恢复。
+ * @returns 无返回值。
+ */
+export function setActiveWorkspaceSyncSuspended(suspended: boolean): void {
+  activeWorkspaceSyncSuspended = suspended;
 }
 
 const LAYOUT_VERSION = 1;
@@ -218,6 +236,8 @@ export const useLayoutStore = create<LayoutState>((set, get) => ({
   /** 从后端加载布局；无参数，返回加载完成的 Promise。 */
   load: async () => {
     const layout = await layoutGet();
+    // 加载产出的是骨架树，在首次会话级操作前不得写回激活工作区
+    sessionTreeTouched = false;
     const savedWorkspaces = layout.savedWorkspaces ?? [];
     const activeSavedWorkspaceId = savedWorkspaces.some(
       (item) => item.id === layout.activeSavedWorkspaceId,
@@ -257,9 +277,15 @@ export const useLayoutStore = create<LayoutState>((set, get) => ({
       persistTimer = null;
       const { tree, activePaneId, activeSavedWorkspaceId, savedWorkspaces } = get();
       let nextSavedWorkspaces = savedWorkspaces;
-      // 激活工作区随最新布局与会话引用自动写回（活文档语义）
+      // 激活工作区随最新布局与会话引用自动写回（活文档语义）；
+      // 骨架树未触碰或恢复编排执行中时跳过，防止覆盖快照内容
       const refsProvider = activeWorkspaceRefsProvider;
-      if (activeSavedWorkspaceId && refsProvider) {
+      if (
+        activeSavedWorkspaceId
+        && refsProvider
+        && sessionTreeTouched
+        && !activeWorkspaceSyncSuspended
+      ) {
         nextSavedWorkspaces = savedWorkspaces.map((item) =>
           item.id === activeSavedWorkspaceId
             ? createSavedWorkspaceSnapshot({
@@ -347,6 +373,7 @@ export const useLayoutStore = create<LayoutState>((set, get) => ({
         ...leaf,
         activeSessionId: sessionId,
       }));
+      sessionTreeTouched = true;
       set({ tree });
       if (get().activeSavedWorkspaceId) get().persist();
       return;
@@ -357,6 +384,7 @@ export const useLayoutStore = create<LayoutState>((set, get) => ({
       sessionIds: [...leaf.sessionIds, sessionId],
       activeSessionId: sessionId,
     }));
+    sessionTreeTouched = true;
     set({ tree });
     if (get().activeSavedWorkspaceId) get().persist();
   },
@@ -370,6 +398,7 @@ export const useLayoutStore = create<LayoutState>((set, get) => ({
       ...leaf,
       activeSessionId: sessionId,
     }));
+    sessionTreeTouched = true;
     set({ tree });
     if (get().activeSavedWorkspaceId) get().persist();
   },
@@ -385,6 +414,7 @@ export const useLayoutStore = create<LayoutState>((set, get) => ({
           : (rest[idx] ?? rest[idx - 1] ?? null);
       return { ...leaf, sessionIds: rest, activeSessionId: nextActive };
     });
+    sessionTreeTouched = true;
     set({ tree });
     if (get().activeSavedWorkspaceId) get().persist();
   },
@@ -428,6 +458,7 @@ export const useLayoutStore = create<LayoutState>((set, get) => ({
     const currentTree = get().tree;
     const tree = replaceLeafSession(currentTree, leafId, oldId, newId);
     if (tree !== currentTree) {
+      sessionTreeTouched = true;
       set({ tree });
       if (get().activeSavedWorkspaceId) get().persist();
     }
@@ -471,6 +502,8 @@ export const useLayoutStore = create<LayoutState>((set, get) => ({
   restoreSavedWorkspace: (savedWorkspaceId) => {
     const saved = get().savedWorkspaces.find((item) => item.id === savedWorkspaceId);
     if (!saved) return null;
+    // 恢复出的树携带快照会话内容，属于会话级变更
+    sessionTreeTouched = true;
     set({
       tree: clonePaneTree(saved.tree),
       activePaneId: saved.activePaneId,

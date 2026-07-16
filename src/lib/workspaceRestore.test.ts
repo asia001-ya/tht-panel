@@ -249,4 +249,27 @@ describe("restoreWorkspaceById", () => {
     });
     expect(commandMocks.managedSessionUpdate).not.toHaveBeenCalled();
   });
+
+  it("恢复进行中时并发请求被短路且只 spawn 一次", async () => {
+    let releaseSpawn: ((info: PtySessionInfo) => void) | undefined;
+    commandMocks.ptySpawn.mockImplementation(
+      () => new Promise<PtySessionInfo>((resolve) => {
+        releaseSpawn = resolve;
+      }),
+    );
+
+    const first = restoreWorkspaceById("saved-1");
+    // 等首个编排推进到 spawn 挂起点
+    await vi.waitFor(() => {
+      expect(commandMocks.ptySpawn).toHaveBeenCalledTimes(1);
+    });
+    const second = await restoreWorkspaceById("saved-1");
+
+    expect(second).toEqual({ restored: false, errorCount: 0 });
+    releaseSpawn?.(alivePty("pty-new"));
+    const firstResult = await first;
+
+    expect(firstResult.restored).toBe(true);
+    expect(commandMocks.ptySpawn).toHaveBeenCalledTimes(1);
+  });
 });
