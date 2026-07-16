@@ -105,6 +105,7 @@ beforeEach(() => {
     },
     activePaneId: "pane-web",
     activeSavedWorkspaceId: "saved-1",
+    persist: vi.fn(),
   });
   useSessionStore.setState({
     sessions: {
@@ -276,6 +277,7 @@ describe("PaneTaskDrawer", () => {
     await userEvent.click(screen.getByRole("button", { name: "接收并注入" }));
     expect(screen.getByText("pty-server")).toBeTruthy();
     expect(screen.getByText(/任务 ID：task-queued/)).toBeTruthy();
+    expect(screen.getByText(/仅在目标 AI 界面仍打开时执行/)).toBeTruthy();
     expect((
       screen.getByRole("button", { name: "确认接收并注入" }) as HTMLButtonElement
     ).disabled).toBe(false);

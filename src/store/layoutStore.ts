@@ -258,14 +258,15 @@ export const useLayoutStore = create<LayoutState>((set, get) => ({
       const { tree, activePaneId, activeSavedWorkspaceId, savedWorkspaces } = get();
       let nextSavedWorkspaces = savedWorkspaces;
       // 激活工作区随最新布局与会话引用自动写回（活文档语义）
-      if (activeSavedWorkspaceId && activeWorkspaceRefsProvider) {
+      const refsProvider = activeWorkspaceRefsProvider;
+      if (activeSavedWorkspaceId && refsProvider) {
         nextSavedWorkspaces = savedWorkspaces.map((item) =>
           item.id === activeSavedWorkspaceId
             ? createSavedWorkspaceSnapshot({
                 ...item,
                 tree,
                 activePaneId,
-                sessionRefs: activeWorkspaceRefsProvider(),
+                sessionRefs: refsProvider(),
               })
             : item,
         );
