@@ -36,6 +36,39 @@ pub struct ProviderProfile {
     pub config: AgentConfig,
 }
 
+/// 主工作区壁纸设置。字段保留默认值以兼容旧版 settings.json。
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct WallpaperSettings {
+    pub enabled: bool,
+    pub kind: String,
+    pub file: Option<String>,
+    pub data_url: Option<String>,
+    pub fit: String,
+    pub opacity: f64,
+    pub blur: f64,
+    pub dim: f64,
+    pub terminal_opacity: f64,
+    pub glass_blur: f64,
+}
+
+impl Default for WallpaperSettings {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            kind: "none".to_string(),
+            file: None,
+            data_url: None,
+            fit: "cover".to_string(),
+            opacity: 1.0,
+            blur: 0.0,
+            dim: 0.28,
+            terminal_opacity: 0.86,
+            glass_blur: 8.0,
+        }
+    }
+}
+
 /// Keep-alive 配置：定时向活跃会话发送指令防止超时。
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", default)]
@@ -97,6 +130,8 @@ pub struct GlobalConfig {
     pub codex_defaults: AgentConfig,
     /// 用户维护的命名供应商列表。
     pub providers: Vec<ProviderProfile>,
+    /// 主终端区壁纸与透明度设置。
+    pub wallpaper: WallpaperSettings,
 }
 
 impl Default for GlobalConfig {
@@ -113,6 +148,7 @@ impl Default for GlobalConfig {
             claude_defaults: AgentConfig::default(),
             codex_defaults: AgentConfig::default(),
             providers: Vec::new(),
+            wallpaper: WallpaperSettings::default(),
         }
     }
 }
@@ -153,6 +189,17 @@ pub struct PtySessionInfo {
     pub created_at: String,
 }
 
+/// AI 终端的权限执行模式。
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum TerminalExecutionMode {
+    /// 沿用 CLI 默认权限与确认策略。
+    #[default]
+    Default,
+    /// 跳过权限确认与沙箱限制。
+    Yolo,
+}
+
 /// 启动请求（前端 pty_spawn 传入）。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -166,6 +213,9 @@ pub struct SpawnRequest {
     /// 是否严格按请求解析供应商；缺失时保持旧回退行为。
     #[serde(default)]
     pub strict_provider: bool,
+    /// AI 权限执行模式；旧请求缺失时按默认模式处理。
+    #[serde(default)]
+    pub execution_mode: TerminalExecutionMode,
     /// 恢复历史会话时传 AI sessionId
     pub resume_session_id: Option<String>,
     /// 目标 leaf 列数

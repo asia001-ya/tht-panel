@@ -32,6 +32,29 @@
 .dialog-confirm {
   width: 400px;
 }
+.dialog-terminal-create {
+  width: 440px;
+}
+.terminal-create-options {
+  gap: 18px;
+}
+.dialog-hint {
+  margin-top: 6px;
+  color: var(--fg-faint);
+  font-size: 12px;
+  line-height: 1.45;
+}
+.dialog-hint-warning {
+  color: var(--danger);
+}
+.dialog-error {
+  padding: 9px 10px;
+  color: var(--danger);
+  background: color-mix(in srgb, var(--danger) 8%, transparent);
+  border: 1px solid color-mix(in srgb, var(--danger) 32%, transparent);
+  border-radius: var(--radius-sm);
+  font-size: 12px;
+}
 
 .dialog-header {
   padding: 14px 18px;

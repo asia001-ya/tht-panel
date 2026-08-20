@@ -35,6 +35,11 @@
 .sidebar-nav-item:hover {
   background: var(--sidebar-hover);
 }
+/* 视图类导航项的激活态（用量 / 供应商） */
+.sidebar-nav-item.active {
+  background: var(--sidebar-active);
+  font-weight: 500;
+}
 
 /* 搜索框 */
 .sidebar-search {
@@ -425,6 +430,10 @@
 }
 .sidebar-footer-profile:hover {
   background: var(--sidebar-hover);
+}
+/* 设置页为当前视图时高亮 */
+.sidebar-footer-profile.active {
+  background: var(--sidebar-active);
 }
 .sidebar-avatar {
   width: 24px;

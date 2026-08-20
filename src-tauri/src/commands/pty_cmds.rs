@@ -23,7 +23,12 @@ pub fn pty_spawn(
     _app: tauri::AppHandle,
     req: SpawnRequest,
 ) -> Result<PtySessionInfo, AppError> {
-    let launch = state.config.resolve_launch(&req)?;
+    // 临时诊断：确认前端是否调用到后端，以及失败在哪一步。
+    eprintln!("[DIAG] pty_spawn 进入: kind={} ws={:?}", req.kind, req.workspace_id);
+    let launch = state.config.resolve_launch(&req).inspect_err(|e| {
+        eprintln!("[DIAG] resolve_launch 失败: {e}");
+    })?;
+    eprintln!("[DIAG] resolve_launch 成功，准备 spawn");
     let scrollback = state.config.global().scrollback_bytes;
     state.pty.spawn(
         launch,

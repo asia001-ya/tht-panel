@@ -39,11 +39,57 @@
   gap: 2px;
 }
 
+/* 主终端工作区：壁纸层在底部，内容层保持可交互。 */
+.pane-workspace-shell {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+  background: var(--bg);
+}
+.wallpaper-active .main-header {
+  background: color-mix(in srgb, var(--bg) 26%, transparent);
+  backdrop-filter: blur(var(--wallpaper-glass-blur, 0px));
+}
+.pane-workspace-shell.wallpaper-active {
+  background: transparent;
+}
+.pane-workspace-content {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  flex-direction: column;
+}
+.wallpaper-layer {
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  overflow: hidden;
+  pointer-events: none;
+}
+.wallpaper-media {
+  position: absolute;
+  inset: -3%;
+  background-color: var(--bg);
+}
+.wallpaper-dim {
+  position: absolute;
+  inset: 0;
+  background: #000;
+}
+
 /* PaneGrid 包裹层 */
 .pane-grid-wrap {
   flex: 1;
   min-height: 0;
   padding: 6px;
+  background: var(--bg);
+}
+.wallpaper-active .pane-grid-wrap {
+  background: transparent;
 }
 
 .pane-grid {
@@ -92,6 +138,10 @@
   overflow: clip;
   background: var(--term-bg);
 }
+.wallpaper-active .pane-leaf {
+  background: color-mix(in srgb, var(--bg) 22%, transparent);
+  backdrop-filter: blur(var(--wallpaper-glass-blur, 0px));
+}
 .pane-active {
   border-color: var(--accent);
   box-shadow: 0 0 0 1px var(--focus-ring), 0 0 10px var(--focus-ring);
@@ -99,6 +149,10 @@
 .pane-drop-target {
   border-color: var(--badge-running);
   box-shadow: inset 0 0 0 2px var(--badge-running);
+}
+.pane-drag-source {
+  border-color: var(--accent);
+  box-shadow: inset 0 0 0 1px var(--accent);
 }
 
 .pane-titlebar {
@@ -110,18 +164,22 @@
   background: var(--bg);
   border-bottom: 1px solid var(--border);
   flex: 0 0 auto;
+  cursor: grab;
+  touch-action: none;
+  user-select: none;
 }
 .pane-drag-handle {
   flex: 0 0 auto;
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 18px;
+  width: 24px;
   height: 22px;
   color: var(--fg-faint);
   cursor: grab;
 }
-.pane-drag-handle:active {
+.pane-grid-dragging .pane-titlebar,
+.pane-grid-dragging .pane-drag-handle {
   cursor: grabbing;
 }
 .pane-drag-handle:hover {
@@ -332,16 +390,67 @@
   position: relative;
   background: var(--term-bg);
 }
+.pane-leaf > .composer {
+  flex: 0 0 auto;
+  min-width: 0;
+  padding: 8px;
+  background: var(--bg);
+  border-top: 1px solid var(--border);
+}
+.wallpaper-active .pane-leaf > .composer {
+  background: transparent;
+}
+.pane-leaf > .composer .composer-card {
+  max-width: none;
+  margin: 0;
+}
+.pane-leaf > .composer .composer-collapsed {
+  min-height: 30px;
+  padding: 0;
+}
+.wallpaper-active .pane-titlebar {
+  background: color-mix(in srgb, var(--bg) 42%, transparent);
+  backdrop-filter: blur(var(--wallpaper-glass-blur, 0px));
+}
+.wallpaper-active .pane-body,
+.wallpaper-active .term-host {
+  background: transparent;
+}
+.wallpaper-active .term-host::before {
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  content: "";
+  background: var(--term-bg);
+  opacity: var(--wallpaper-terminal-opacity, 0.86);
+  pointer-events: none;
+}
+.wallpaper-active .term-host-inner,
+.wallpaper-active .term-search,
+.wallpaper-active .term-placeholder {
+  position: relative;
+  z-index: 1;
+}
 
 .pane-empty {
   height: 100%;
   display: flex;
+  flex-direction: column;
   align-items: center;
   justify-content: center;
   color: var(--fg-faint);
   font-size: 13px;
   text-align: center;
   padding: 16px;
+}
+.pane-empty-create {
+  margin-top: 10px;
+  padding: 6px 12px;
+  color: var(--accent-fg);
+  background: var(--accent);
+  border: 1px solid var(--accent);
+  border-radius: var(--radius-sm);
+  font-size: 12px;
 }
 
 /* xterm 容器铺满 pane-body */
@@ -706,6 +815,65 @@
   user-select: none;
   pointer-events: none;
 }
+.term-error {
+  position: absolute;
+  right: 12px;
+  bottom: 12px;
+  z-index: 20;
+  max-width: min(420px, calc(100% - 24px));
+  padding: 7px 10px;
+  color: var(--danger);
+  background: color-mix(in srgb, var(--panel) 92%, transparent);
+  border: 1px solid color-mix(in srgb, var(--danger) 35%, transparent);
+  border-radius: var(--radius-sm);
+  font-size: 11px;
+}
+.pane-restore-error {
+  position: absolute;
+  top: 8px;
+  left: 50%;
+  z-index: 12;
+  max-width: calc(100% - 24px);
+  padding: 6px 9px;
+  color: var(--danger);
+  background: var(--panel);
+  border: 1px solid color-mix(in srgb, var(--danger) 45%, var(--border));
+  border-radius: var(--radius-sm);
+  box-shadow: var(--shadow-1);
+  font-size: 11px;
+  overflow-wrap: anywhere;
+  transform: translateX(-50%);
+}
+.term-context-menu {
+  position: fixed;
+  z-index: 600;
+  display: flex;
+  min-width: 136px;
+  flex-direction: column;
+  gap: 2px;
+  padding: 4px;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  box-shadow: var(--shadow-2);
+}
+.term-context-menu button {
+  min-height: 28px;
+  padding: 4px 9px;
+  color: var(--fg);
+  background: transparent;
+  border: 0;
+  border-radius: 4px;
+  font-size: 12px;
+  text-align: left;
+}
+.term-context-menu button:hover:not(:disabled) {
+  background: var(--hover);
+}
+.term-context-menu button:disabled {
+  color: var(--fg-faint);
+  cursor: default;
+}
 
 /* 搜索浮条 */
 .term-search {
@@ -736,4 +904,110 @@
 .term-search-input:focus {
   border-color: var(--fg);
   box-shadow: 0 0 0 2px var(--focus-ring);
+}
+
+/* 常驻终端输入区：与参考项目的底部 composer 对齐，保持可复制/粘贴的原生 textarea。 */
+.composer {
+  flex: 0 0 auto;
+  padding: 0 14px 14px;
+  background: var(--bg);
+}
+.wallpaper-active .composer {
+  background: transparent;
+}
+.composer-card {
+  display: flex;
+  flex-direction: column;
+  max-width: 920px;
+  margin: 0 auto;
+  padding: 10px 12px 8px;
+  background: var(--panel);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-1);
+}
+.composer-error {
+  padding: 6px 10px;
+  color: var(--danger);
+  background: color-mix(in srgb, var(--danger) 8%, transparent);
+  border-bottom: 1px solid color-mix(in srgb, var(--danger) 30%, transparent);
+  font-size: 11px;
+}
+.wallpaper-active .composer-card {
+  background: color-mix(in srgb, var(--panel) 70%, transparent);
+  backdrop-filter: blur(var(--wallpaper-glass-blur, 0px));
+}
+.composer-input {
+  width: 100%;
+  min-height: 24px;
+  max-height: 120px;
+  padding: 2px 0 7px;
+  resize: none;
+  overflow-y: auto;
+  color: var(--fg);
+  background: transparent;
+  border: 0;
+  outline: none;
+  font: inherit;
+  line-height: 1.5;
+}
+.composer-input::placeholder {
+  color: var(--fg-faint);
+}
+.composer-input:disabled {
+  cursor: not-allowed;
+  opacity: 0.6;
+}
+.composer-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  min-height: 26px;
+}
+.composer-meta,
+.composer-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.composer-kind {
+  color: var(--fg-faint);
+  font-size: 11px;
+  text-transform: uppercase;
+}
+.composer-send {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  color: var(--accent-fg);
+  background: var(--accent);
+  border: 0;
+  border-radius: var(--radius-sm);
+}
+.composer-send:disabled {
+  cursor: not-allowed;
+  opacity: 0.32;
+}
+.composer-collapsed {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  min-height: 38px;
+  padding: 0 14px 8px;
+  color: var(--fg-faint);
+  background: var(--bg);
+  cursor: text;
+}
+.wallpaper-active .composer-collapsed {
+  background: transparent;
+}
+.composer-collapsed-hint {
+  max-width: calc(100% - 40px);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12px;
 }

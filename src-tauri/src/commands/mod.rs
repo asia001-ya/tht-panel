@@ -5,10 +5,12 @@
 //! 返回 `Result<T, AppError>`（错误序列化为 `{code,message}`）。
 
 pub mod config_cmds;
+pub mod clipboard_cmds;
 pub mod history_cmds;
 pub mod pty_cmds;
 pub mod session_cmds;
 pub mod task_cmds;
+pub mod usage_cmds;
 
 use tauri::{Manager, State};
 
@@ -20,11 +22,13 @@ pub use config_cmds::{
     config_get, config_set, layout_get, layout_save, workspace_delete, workspace_list,
     workspace_save,
 };
+pub use clipboard_cmds::clipboard_save_image;
 pub use history_cmds::history_list;
 pub use pty_cmds::{pty_attach, pty_detach, pty_kill, pty_list, pty_resize, pty_spawn, pty_write};
 pub use task_cmds::{
     task_cancel, task_close, task_create, task_dispatch, task_forward, task_list, task_report,
 };
+pub use usage_cmds::{usage_query, usage_refresh};
 
 /// 退出应用：杀死全部 PTY 会话（防残留 powershell/node，风险 10）后退出进程。
 ///

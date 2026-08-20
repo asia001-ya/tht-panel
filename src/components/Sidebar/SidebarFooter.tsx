@@ -10,14 +10,18 @@ import { Sun, Moon, ICON_DEFAULTS } from "../ui/icons";
 export function SidebarFooter(): React.JSX.Element {
   const theme = useSettingsStore((s) => s.config?.theme ?? "light");
   const setTheme = useSettingsStore((s) => s.setTheme);
-  const openSettings = useUiStore((s) => s.openSettings);
+  const mainView = useUiStore((s) => s.mainView);
+  const setMainView = useUiStore((s) => s.setMainView);
   const workspaces = useWorkspaceStore((s) => s.workspaces);
 
   const initial = workspaces[0]?.name?.[0]?.toUpperCase() ?? "T";
 
   return (
     <div className="sidebar-footer-v2">
-      <div className="sidebar-footer-profile" onClick={() => openSettings()}>
+      <div
+        className={`sidebar-footer-profile${mainView === "settings" ? " active" : ""}`}
+        onClick={() => setMainView("settings")}
+      >
         <div className="sidebar-avatar">{initial}</div>
         <div className="sidebar-footer-info">
           <span className="sidebar-footer-label">设置</span>

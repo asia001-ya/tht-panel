@@ -7,6 +7,7 @@ import "./styles/base.css";
 import "./styles/sidebar.css";
 import "./styles/main.css";
 import "./styles/dialogs.css";
+import "./styles/views.css";
 import "@xterm/xterm/css/xterm.css";
 
 // 注意：不使用 React.StrictMode。xterm 是命令式库，StrictMode 在开发模式下

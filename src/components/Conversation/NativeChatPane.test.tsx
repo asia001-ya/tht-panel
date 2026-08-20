@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { cleanup, render, screen, waitFor } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type {
@@ -40,6 +40,32 @@ const conversation: ManagedSession = {
 };
 
 describe("NativeChatPane", () => {
+  it("按当前输入框选区插入粘贴文本", async () => {
+    const user = userEvent.setup();
+    render(
+      <NativeChatPane
+        conversation={conversation}
+        project={project}
+        providers={providers}
+        onUpdate={async () => undefined}
+        runPrompt={async () => ""}
+      />,
+    );
+
+    const textarea = screen.getByLabelText("消息") as HTMLTextAreaElement;
+    await user.type(textarea, "hello");
+    textarea.setSelectionRange(2, 4);
+    fireEvent.paste(textarea, {
+      clipboardData: {
+        getData: (type: string) => type === "text/plain" ? "XX" : "",
+        items: [],
+        files: [],
+      },
+    });
+
+    await waitFor(() => expect(textarea.value).toBe("heXXo"));
+  });
+
   it("从编辑框直接发送消息并显示 CLI 返回内容", async () => {
     const user = userEvent.setup();
     const onUpdate = vi.fn(async () => undefined);

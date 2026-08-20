@@ -3,11 +3,50 @@
  * 终端输出永不进 store，此处仅低频 UI/配置状态。
  */
 import { create } from "zustand";
-import type { GlobalConfig, ProviderProfile } from "../api/types";
+import type { GlobalConfig, ProviderProfile, WallpaperSettings } from "../api/types";
 import { configGet, configSet } from "../api/commands";
 
 /** 持久化防抖句柄（模块级，跨调用复用同一个定时器） */
 let saveTimer: ReturnType<typeof setTimeout> | null = null;
+
+/** 壁纸默认值：关闭壁纸时主区仍沿用原有不透明主题。 */
+export const DEFAULT_WALLPAPER: WallpaperSettings = {
+  enabled: false,
+  kind: "none",
+  file: null,
+  dataUrl: null,
+  fit: "cover",
+  opacity: 1,
+  blur: 0,
+  dim: 0.28,
+  terminalOpacity: 0.86,
+  glassBlur: 8,
+};
+
+/** Web 预览 / 首次启动时的完整配置，避免 IPC 暂不可用时设置页永久停在加载态。 */
+export const DEFAULT_GLOBAL_CONFIG: GlobalConfig = {
+  theme: "light",
+  shellPath: "powershell.exe",
+  fontSize: 14,
+  scrollbackBytes: 5 * 1024 * 1024,
+  scrollbackLines: 10000,
+  notifyOnWaiting: true,
+  claudeDefaults: {},
+  codexDefaults: {},
+  providers: [],
+  wallpaper: DEFAULT_WALLPAPER,
+};
+
+function normalizeWallpaper(value: WallpaperSettings | undefined): WallpaperSettings {
+  const source = value ?? DEFAULT_WALLPAPER;
+  return {
+    ...DEFAULT_WALLPAPER,
+    ...source,
+    file: source.file ?? null,
+    dataUrl: source.dataUrl ?? null,
+    enabled: Boolean(source.enabled && (source.dataUrl || source.file)),
+  };
+}
 
 /**
  * 把主题写到 <html data-theme>，供 CSS 变量切换两套配色。
@@ -25,7 +64,9 @@ function scheduleSave(cfg: GlobalConfig): void {
   if (saveTimer !== null) clearTimeout(saveTimer);
   saveTimer = setTimeout(() => {
     saveTimer = null;
-    void configSet(cfg);
+    void configSet(cfg).catch(() => {
+      // 浏览器预览没有 Tauri IPC；本地状态仍保留，桌面端会正常持久化。
+    });
   }, 500);
 }
 
@@ -41,6 +82,9 @@ interface SettingsState {
   setTheme: (theme: "light" | "dark") => void;
   /** 设置终端字号并持久化 */
   setFontSize: (fontSize: number) => void;
+  /** 更新壁纸字段并立即作用到主区，落盘沿用全局配置防抖。 */
+  setWallpaper: (partial: Partial<WallpaperSettings>) => void;
+  clearWallpaper: () => void;
 }
 
 const EMPTY_PROVIDERS: ProviderProfile[] = [];
@@ -56,7 +100,17 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
 
   /** 从后端拉取配置填充 store，并把主题应用到 data-theme */
   load: async () => {
-    const config = await configGet();
+    let raw: GlobalConfig;
+    try {
+      raw = await configGet();
+    } catch {
+      // 浏览器预览和 Tauri 尚未初始化时仍展示完整可操作的默认设置。
+      raw = DEFAULT_GLOBAL_CONFIG;
+    }
+    const config: GlobalConfig = {
+      ...raw,
+      wallpaper: normalizeWallpaper(raw.wallpaper),
+    };
     applyThemeAttr(config.theme);
     set({ config, loaded: true });
   },
@@ -79,5 +133,24 @@ export const useSettingsStore = create<SettingsState>((set, get) => ({
   /** 设置终端字号（走 update 合并 + 持久化） */
   setFontSize: (fontSize) => {
     get().update({ fontSize });
+  },
+
+  setWallpaper: (partial) => {
+    const current = get().config;
+    if (!current) return;
+    const wallpaper = normalizeWallpaper({
+      ...normalizeWallpaper(current.wallpaper),
+      ...partial,
+    });
+    get().update({ wallpaper });
+  },
+
+  clearWallpaper: () => {
+    get().setWallpaper({
+      enabled: false,
+      kind: "none",
+      file: null,
+      dataUrl: null,
+    });
   },
 }));

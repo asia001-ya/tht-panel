@@ -44,6 +44,12 @@ export const darkXterm: ITheme = {
 };
 
 /** 按主题取对应 xterm 配色 */
-export function xtermThemeFor(theme: "light" | "dark"): ITheme {
-  return theme === "dark" ? darkXterm : lightXterm;
+export function xtermThemeFor(
+  theme: "light" | "dark",
+  terminalOpacity = 1,
+): ITheme {
+  const base = theme === "dark" ? darkXterm : lightXterm;
+  if (terminalOpacity >= 0.999) return base;
+  // 透明度由终端宿主的单一背景层承载，避免 xterm 多层 canvas/DOM 重复叠色。
+  return { ...base, background: "rgba(0, 0, 0, 0)" };
 }

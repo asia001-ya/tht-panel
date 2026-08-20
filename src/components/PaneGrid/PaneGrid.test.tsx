@@ -171,6 +171,39 @@ function createDragEvent(
   return event;
 }
 
+/** 创建携带稳定 pointerId 的指针事件，兼容 jsdom 未实现 PointerEvent 的环境。 */
+function createPointerEvent(
+  type: string,
+  init: {
+    pointerId?: number;
+    clientX?: number;
+    clientY?: number;
+    button?: number;
+    isPrimary?: boolean;
+  } = {},
+): Event {
+  const event = new MouseEvent(type, {
+    bubbles: true,
+    cancelable: true,
+    button: init.button ?? 0,
+    clientX: init.clientX ?? 0,
+    clientY: init.clientY ?? 0,
+  });
+  Object.defineProperties(event, {
+    pointerId: { value: init.pointerId ?? 1 },
+    isPrimary: { value: init.isPrimary ?? true },
+  });
+  return event;
+}
+
+function mockElementFromPoint(target: HTMLElement): void {
+  Object.defineProperty(document, "elementFromPoint", {
+    configurable: true,
+    writable: true,
+    value: vi.fn(() => target),
+  });
+}
+
 interface RenderedPaneGrid {
   sourceHandle: HTMLElement;
   sourceLeaf: HTMLElement;
@@ -568,6 +601,93 @@ describe("PaneGrid 关闭委托", () => {
 });
 
 describe("PaneGrid 窗格拖放", () => {
+  it("标题栏 Pointer Events 拖到另一窗格后交换内容", () => {
+    const swapPaneContents = vi.spyOn(
+      useLayoutStore.getState(),
+      "swapPaneContents",
+    );
+    const { sourceLeaf, targetLeaf } = renderPaneGrid();
+    const sourceTitlebar = sourceLeaf.querySelector<HTMLElement>(".pane-titlebar");
+    if (!sourceTitlebar) throw new Error("测试窗格必须包含标题栏");
+    mockElementFromPoint(targetLeaf);
+
+    fireEvent(
+      sourceTitlebar,
+      createPointerEvent("pointerdown", { clientX: 10, clientY: 10 }),
+    );
+    fireEvent(
+      document,
+      createPointerEvent("pointermove", { clientX: 30, clientY: 10 }),
+    );
+
+    expect(sourceLeaf.classList.contains("pane-drag-source")).toBe(true);
+    expect(targetLeaf.classList.contains("pane-drop-target")).toBe(true);
+
+    fireEvent(
+      document,
+      createPointerEvent("pointerup", { clientX: 30, clientY: 10 }),
+    );
+
+    expect(swapPaneContents).toHaveBeenCalledOnce();
+    expect(swapPaneContents).toHaveBeenCalledWith("leaf-left", "leaf-right");
+    expect(document.body.style.userSelect).toBe("");
+    expect(document.body.style.cursor).toBe("");
+  });
+
+  it("Pointer Events 未超过拖动阈值时不交换窗格", () => {
+    const swapPaneContents = vi.spyOn(
+      useLayoutStore.getState(),
+      "swapPaneContents",
+    );
+    const { sourceLeaf, targetLeaf } = renderPaneGrid();
+    const sourceTitlebar = sourceLeaf.querySelector<HTMLElement>(".pane-titlebar");
+    if (!sourceTitlebar) throw new Error("测试窗格必须包含标题栏");
+    mockElementFromPoint(targetLeaf);
+
+    fireEvent(
+      sourceTitlebar,
+      createPointerEvent("pointerdown", { clientX: 10, clientY: 10 }),
+    );
+    fireEvent(
+      document,
+      createPointerEvent("pointermove", { clientX: 13, clientY: 12 }),
+    );
+    fireEvent(
+      document,
+      createPointerEvent("pointerup", { clientX: 13, clientY: 12 }),
+    );
+
+    expect(swapPaneContents).not.toHaveBeenCalled();
+    expect(targetLeaf.classList.contains("pane-drop-target")).toBe(false);
+  });
+
+  it("从 Tab 按下时不启动标题栏 Pointer Events 拖动", () => {
+    const swapPaneContents = vi.spyOn(
+      useLayoutStore.getState(),
+      "swapPaneContents",
+    );
+    const { sourceLeaf, targetLeaf } = renderPaneGrid();
+    const tab = sourceLeaf.querySelector<HTMLElement>(".pane-tab");
+    if (!tab) throw new Error("测试源窗格必须包含 Tab");
+    mockElementFromPoint(targetLeaf);
+
+    fireEvent(
+      tab,
+      createPointerEvent("pointerdown", { clientX: 10, clientY: 10 }),
+    );
+    fireEvent(
+      document,
+      createPointerEvent("pointermove", { clientX: 40, clientY: 10 }),
+    );
+    fireEvent(
+      document,
+      createPointerEvent("pointerup", { clientX: 40, clientY: 10 }),
+    );
+
+    expect(swapPaneContents).not.toHaveBeenCalled();
+    expect(document.querySelector(".pane-drag-source")).toBeNull();
+  });
+
   it("WebView 不暴露 types 时仍接管合法窗格拖放并写入兼容数据", () => {
     const dataTransfer = createDataTransfer([]);
     const { sourceHandle, targetLeaf } = renderPaneGrid();

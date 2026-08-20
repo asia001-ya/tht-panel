@@ -16,6 +16,10 @@ import { selectProviders, useSettingsStore } from "../../store/settingsStore";
 import { useWorkspaceStore } from "../../store/workspaceStore";
 import { ProviderSelect } from "../settings/ProviderSelect";
 import { Send } from "../ui/icons";
+import {
+  copyClipboardText,
+  resolveClipboardPayload,
+} from "../../lib/clipboard";
 
 interface NativeChatPaneProps {
   conversation: ManagedSession;
@@ -38,6 +42,7 @@ export function NativeChatPane({
   const [sending, setSending] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const conversationTokenRef = useRef(0);
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
 
   useEffect(() => {
     conversationTokenRef.current += 1;
@@ -139,6 +144,38 @@ export function NativeChatPane({
     }
   };
 
+  const insertDraftText = (value: string): void => {
+    if (!value) return;
+    const textarea = textareaRef.current;
+    setDraft((current) => {
+      const start = textarea?.selectionStart ?? current.length;
+      const end = textarea?.selectionEnd ?? start;
+      const next = `${current.slice(0, start)}${value}${current.slice(end)}`;
+      queueMicrotask(() => {
+        const target = textareaRef.current;
+        if (!target) return;
+        const caret = start + value.length;
+        target.focus();
+        target.setSelectionRange(caret, caret);
+      });
+      return next;
+    });
+  };
+
+  const handleDraftPaste = async (data?: DataTransfer | null): Promise<void> => {
+    const payload = await resolveClipboardPayload(data);
+    if (payload.kind !== "none") insertDraftText(payload.text);
+  };
+
+  const handleDraftCopy = (event: React.ClipboardEvent<HTMLTextAreaElement>): void => {
+    const textarea = event.currentTarget;
+    const start = textarea.selectionStart ?? 0;
+    const end = textarea.selectionEnd ?? 0;
+    if (start === end) return;
+    event.preventDefault();
+    void copyClipboardText(textarea.value.slice(start, end));
+  };
+
   return (
     <div className="native-chat">
       <div className="native-chat-toolbar">
@@ -173,12 +210,27 @@ export function NativeChatPane({
 
       <div className="native-composer">
         <textarea
+          ref={textareaRef}
           aria-label="消息"
           value={draft}
           rows={3}
           placeholder={selectedProvider ? "输入消息" : "请先为项目选择供应商"}
           disabled={!selectedProvider || sending}
           onChange={(event) => setDraft(event.target.value)}
+          onCopy={handleDraftCopy}
+          onPaste={(event) => {
+            event.preventDefault();
+            void handleDraftPaste(event.clipboardData);
+          }}
+          onDragOver={(event) => {
+            event.preventDefault();
+            event.stopPropagation();
+          }}
+          onDrop={(event) => {
+            event.preventDefault();
+            event.stopPropagation();
+            void handleDraftPaste(event.dataTransfer);
+          }}
           onKeyDown={(event) => {
             if (event.key === "Enter" && !event.shiftKey) {
               event.preventDefault();

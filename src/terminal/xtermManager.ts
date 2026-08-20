@@ -15,6 +15,7 @@ import { xtermThemeFor } from "./themes";
 
 /** 全局活跃终端注册表：createTerm 加入、unregisterTerm 移除，供全局主题/字号切换遍历 */
 const g_termRegistry = new Set<Terminal>();
+const g_webglAddons = new WeakMap<Terminal, WebglAddon>();
 
 /** createTerm 的返回：终端实例 + 常用 addon 句柄（fit 用于自适应尺寸，search 用于搜索浮条） */
 export interface CreateTermResult {
@@ -49,14 +50,16 @@ export function createTerm(opts: {
   fontSize: number;
   scrollbackLines: number;
   theme: "light" | "dark";
+  terminalOpacity?: number;
 }): CreateTermResult {
   const term = new Terminal({
     fontFamily: '"JetBrains Mono", Consolas, "Cascadia Mono", monospace',
     fontSize: opts.fontSize,
     scrollback: opts.scrollbackLines,
-    theme: xtermThemeFor(opts.theme),
+    theme: xtermThemeFor(opts.theme, opts.terminalOpacity),
     cursorBlink: false,
     cursorStyle: "bar",
+    allowTransparency: (opts.terminalOpacity ?? 1) < 0.999,
     allowProposedApi: true,
   });
 
@@ -89,16 +92,37 @@ export function createTerm(opts: {
  * @param term 目标终端
  */
 export function tryLoadWebgl(term: Terminal): void {
+  if (g_webglAddons.has(term)) return;
   try {
     const webgl = new WebglAddon();
     // 上下文丢失（如 GPU 重置 / context 数超上限）时销毁 addon，自动降级 DOM 渲染
     webgl.onContextLoss(() => {
       webgl.dispose();
+      g_webglAddons.delete(term);
     });
     term.loadAddon(webgl);
+    g_webglAddons.set(term, webgl);
   } catch {
     // 静默：保持默认渲染，不影响功能
   }
+}
+
+/**
+ * 透明终端必须释放 WebGL canvas，让 xterm 回退到可透传宿主背景的默认渲染器。
+ * 关闭透明模式时再按需恢复 WebGL。
+ * @param term 目标终端。
+ * @param transparent 是否启用透明终端背景。
+ */
+export function setTerminalTransparency(term: Terminal, transparent: boolean): void {
+  const webgl = g_webglAddons.get(term);
+  if (transparent) {
+    if (webgl) {
+      webgl.dispose();
+      g_webglAddons.delete(term);
+    }
+    return;
+  }
+  if (!webgl) tryLoadWebgl(term);
 }
 
 /**
@@ -106,8 +130,12 @@ export function tryLoadWebgl(term: Terminal): void {
  * @param term 目标终端
  * @param theme 目标主题 light|dark
  */
-export function applyTheme(term: Terminal, theme: "light" | "dark"): void {
-  term.options.theme = xtermThemeFor(theme);
+export function applyTheme(
+  term: Terminal,
+  theme: "light" | "dark",
+  terminalOpacity = 1,
+): void {
+  term.options.theme = xtermThemeFor(theme, terminalOpacity);
 }
 
 /**
@@ -132,6 +160,11 @@ export function registerTerm(term: Terminal): void {
  * @param term 目标终端
  */
 export function unregisterTerm(term: Terminal): void {
+  const webgl = g_webglAddons.get(term);
+  if (webgl) {
+    webgl.dispose();
+    g_webglAddons.delete(term);
+  }
   g_termRegistry.delete(term);
 }
 

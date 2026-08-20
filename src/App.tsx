@@ -12,14 +12,24 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Sidebar } from "./components/Sidebar/Sidebar";
 import { PaneGrid } from "./components/PaneGrid/PaneGrid";
+import { MainWallpaperLayer } from "./components/layout/MainWallpaperLayer";
+import { ActivityBar } from "./components/layout/ActivityBar";
+import { StatusBar } from "./components/layout/StatusBar";
+import { TitleBar } from "./components/layout/TitleBar";
 import { PanelLeftClose, PanelLeftOpen } from "./components/ui/icons";
 import WorkspaceDialog from "./components/dialogs/WorkspaceDialog";
-import SettingsDialog from "./components/dialogs/SettingsDialog";
+import TerminalCreateDialog, {
+  type TerminalCreateOptions,
+} from "./components/dialogs/TerminalCreateDialog";
 import ConfirmDialog from "./components/dialogs/ConfirmDialog";
+import { UsageView } from "./components/views/UsageView";
+import { ProviderView } from "./components/views/ProviderView";
+import { SettingsView } from "./components/views/SettingsView";
 import { PaneTaskDrawer } from "./components/Tasks/PaneTaskDrawer";
 import { useHotkeys } from "./hooks/useHotkeys";
 import { useTheme } from "./hooks/useTheme";
-import { useSettingsStore } from "./store/settingsStore";
+import { selectProviders, useSettingsStore } from "./store/settingsStore";
+import { DEFAULT_WALLPAPER } from "./store/settingsStore";
 import { useWorkspaceStore } from "./store/workspaceStore";
 import { useLayoutStore, preorderLeaves } from "./store/layoutStore";
 import { useSessionStore } from "./store/sessionStore";
@@ -37,9 +47,9 @@ import {
 import { onSessionState, onSessionExit, onQuitRequest } from "./api/events";
 import type { LeafNode, ManagedSession, SpawnRequest } from "./api/types";
 import {
-  resolveNewTerminalSelection,
   resolveTerminalResumeSelection,
 } from "./lib/providers";
+import { planWorkspaceRestore, type RestoreAction } from "./lib/workspaceSnapshots";
 import { nativeConversationTabId, parseNativeConversationTabId } from "./lib/nativeConversation";
 import { workspaceIdForTab } from "./lib/workItems";
 
@@ -73,6 +83,60 @@ const terminalReleasePromises = new Map<
   string,
   Promise<TerminalReleaseResult>
 >();
+
+interface RestoreActionContext {
+  replaceSession: (leafId: string, oldTabId: string, newSessionId: string) => void;
+}
+
+/** 执行单个保存工作区恢复动作；失败只影响当前 Tab，不中断其它窗格。 */
+async function applyRestoreAction(
+  action: RestoreAction,
+  context: RestoreActionContext,
+): Promise<string | null> {
+  if (action.kind === "error") {
+    return action.message;
+  }
+
+  if (action.kind === "keep" || action.kind === "native") {
+    context.replaceSession(action.leafId, action.oldTabId, action.sessionId);
+    return null;
+  }
+
+  try {
+    const info = await ptySpawn({
+      workspaceId: action.ref.workspaceId,
+      kind: action.ref.kind,
+      providerId: action.ref.providerId,
+      strictProvider: action.ref.kind !== "shell",
+      resumeSessionId: action.managed?.aiSessionId,
+      cols: INIT_COLS,
+      rows: INIT_ROWS,
+    });
+    useSessionStore.getState().upsert(info);
+    context.replaceSession(action.leafId, action.oldTabId, info.sessionId);
+
+    if (action.managed) {
+      const updated: ManagedSession = {
+        ...action.managed,
+        kind: info.kind,
+        providerId: action.ref.providerId,
+        ptySessionId: info.sessionId,
+        updatedAt: new Date().toISOString(),
+      };
+      await managedSessionUpdate(updated);
+      void useWorkspaceStore.getState().loadHistory(updated.workspaceId);
+    } else {
+      pendingSessions.set(info.sessionId, {
+        workspaceId: action.ref.workspaceId,
+        kind: action.ref.kind,
+        providerId: action.ref.providerId,
+      });
+    }
+    return null;
+  } catch (error) {
+    return error instanceof Error ? error.message : "会话启动失败";
+  }
+}
 
 /**
  * 用指定后端结果覆盖工作空间历史缓存。
@@ -252,8 +316,20 @@ export default function App(): React.JSX.Element {
   );
   const [sidebarWidth, setSidebarWidth] = useState(() =>
     clampW(Number(localStorage.getItem(SIDEBAR_KEY)) || 240));
-  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+  const sidebarVisible = useUiStore((state) => state.sidebarVisible);
+  const setSidebarVisible = useUiStore((state) => state.setSidebarVisible);
+  const toggleSidebarVisibility = useUiStore((state) => state.toggleSidebar);
   const [sidebarLocateWorkspaceId, setSidebarLocateWorkspaceId] = useState<string | null>(null);
+  const [terminalCreateOpen, setTerminalCreateOpen] = useState(false);
+  const [terminalCreateWorkspaceId, setTerminalCreateWorkspaceId] = useState<string | undefined>();
+  const [terminalCreateError, setTerminalCreateError] = useState<string | null>(null);
+  const [terminalCreating, setTerminalCreating] = useState(false);
+  const mainView = useUiStore((state) => state.mainView);
+  const workspaces = useWorkspaceStore((state) => state.workspaces);
+  const providers = useSettingsStore(selectProviders);
+  const wallpaper = useSettingsStore((state) => state.config?.wallpaper ?? DEFAULT_WALLPAPER);
+  const wallpaperActive = wallpaper.enabled && wallpaper.kind === "image"
+    && Boolean(wallpaper.dataUrl || wallpaper.file);
   const activeSavedWorkspaceId = useLayoutStore((state) => state.activeSavedWorkspaceId);
   const loadTasks = useTaskStore((state) => state.load);
   useHotkeys();
@@ -483,6 +559,8 @@ export default function App(): React.JSX.Element {
    * ① 已在某 Tab → 激活那个窗格+Tab ② 同项目窗格追加 ③ 落点追加
    */
   const openSession = useCallback((sessionId: string): void => {
+    // 切回终端视图，确保 PaneGrid 可见
+    useUiStore.getState().setMainView("panes");
     const ls = useLayoutStore.getState();
     const existing = ls.findLeafBySession(sessionId);
     if (existing) {
@@ -499,6 +577,8 @@ export default function App(): React.JSX.Element {
 
   const openNativeConversation = useCallback(
     (conversation: ManagedSession): void => {
+      // 切回终端视图，确保 PaneGrid 可见
+      useUiStore.getState().setMainView("panes");
       const tabId = nativeConversationTabId(conversation.id);
       const layout = useLayoutStore.getState();
       const existing = layout.findLeafBySession(tabId);
@@ -517,6 +597,8 @@ export default function App(): React.JSX.Element {
 
   /** spawn 后绑定到指定 leaf 的 Tab */
   const spawnInto = useCallback(async (leafId: string, req: SpawnRequest, rebindEntry?: ManagedSession): Promise<void> => {
+    // 切回终端视图，确保 PaneGrid 可见
+    useUiStore.getState().setMainView("panes");
     const info = await ptySpawn(req);
     useSessionStore.getState().upsert(info);
     const ls = useLayoutStore.getState();
@@ -542,28 +624,14 @@ export default function App(): React.JSX.Element {
     }
   }, []);
 
-  /**
-   * 为项目新建 PowerShell PTY 会话。
-   * @param wsId 目标工作空间 ID。
-   * @returns PTY 启动并绑定到目标窗格后完成。
-   */
+  /** 打开指定项目的 AI 终端创建向导。 */
   const newSession = useCallback(
-    async (wsId: string): Promise<void> => {
-      const ws = useWorkspaceStore.getState().workspaces.find((item) => item.id === wsId);
-      if (!ws) return;
-      const leafId = pickLeafFor(wsId);
-      if (!leafId) return;
-      const providers = useSettingsStore.getState().config?.providers ?? [];
-      const selection = resolveNewTerminalSelection(ws, providers);
-      await spawnInto(leafId, {
-        workspaceId: wsId,
-        kind: selection.kind,
-        providerId: selection.providerId,
-        cols: INIT_COLS,
-        rows: INIT_ROWS,
-      });
+    (wsId: string): void => {
+      setTerminalCreateWorkspaceId(wsId);
+      setTerminalCreateError(null);
+      setTerminalCreateOpen(true);
     },
-    [pickLeafFor, spawnInto],
+    [],
   );
 
   /** 点击侧边栏已有会话：PTY 活着则聚焦，否则 resume */
@@ -612,7 +680,44 @@ export default function App(): React.JSX.Element {
     [openNativeConversation, openSession, pickLeafFor, spawnInto],
   );
 
-  /** 新开纯 Shell */
+  /** 打开终端创建向导；快捷入口默认定位当前活动工作区。 */
+  const openTerminalCreate = useCallback((workspaceId?: string): void => {
+    if (workspaces.length === 0) {
+      showToast("请先创建项目");
+      return;
+    }
+    setTerminalCreateWorkspaceId(workspaceId);
+    setTerminalCreateError(null);
+    setTerminalCreateOpen(true);
+  }, [showToast, workspaces.length]);
+
+  /** 提交终端创建向导，并在 spawn 失败时保留表单。 */
+  const createTerminal = useCallback(async (options: TerminalCreateOptions): Promise<void> => {
+    if (terminalCreating) return;
+    const leafId = pickLeafFor(options.workspaceId);
+    if (!leafId) return;
+    setTerminalCreating(true);
+    try {
+      await spawnInto(leafId, {
+        workspaceId: options.workspaceId,
+        kind: options.kind,
+        providerId: options.providerId,
+        // 创建向导已显式选择 AI 类型，系统默认也不能回退到项目默认渠道商。
+        strictProvider: true,
+        executionMode: options.executionMode,
+        cols: INIT_COLS,
+        rows: INIT_ROWS,
+      });
+      setTerminalCreateOpen(false);
+      setTerminalCreateError(null);
+    } catch (error) {
+      setTerminalCreateError(error instanceof Error ? error.message : "会话启动失败");
+    } finally {
+      setTerminalCreating(false);
+    }
+  }, [pickLeafFor, spawnInto, terminalCreating]);
+
+  /** 保留纯 Shell 入口，仅用于项目右键菜单。 */
   const newShell = useCallback(
     async (wsId: string): Promise<void> => {
       const leafId = pickLeafFor(wsId);
@@ -641,8 +746,57 @@ export default function App(): React.JSX.Element {
       }
     }
     if (!wsId) wsId = workspaces[0].id;
-    void newShell(wsId);
-  }, [newShell, showToast]);
+    openTerminalCreate(wsId);
+  }, [openTerminalCreate, showToast]);
+
+  /**
+   * 恢复保存工作区：先用稳定引用规划动作，再复用存活 PTY 或重建已失效会话。
+   * 供应商 ID 始终来自快照引用，避免恢复时被项目默认供应商静默替换。
+   */
+  const restoreSavedWorkspace = useCallback(async (savedWorkspaceId: string): Promise<void> => {
+    const layout = useLayoutStore.getState();
+    const snapshot = layout.savedWorkspaces.find((item) => item.id === savedWorkspaceId);
+    if (!snapshot) return;
+
+    const workspaceStore = useWorkspaceStore.getState();
+    if (workspaceStore.loadAllHistories) {
+      await workspaceStore.loadAllHistories();
+    }
+    const currentWorkspaceStore = useWorkspaceStore.getState();
+    const settings = useSettingsStore.getState();
+    const config = settings.config;
+    if (!config) {
+      showToast("配置尚未加载，暂时无法恢复工作区");
+      return;
+    }
+
+    const managedSessions = Object.values(currentWorkspaceStore.historyCache).flat();
+    const actions = planWorkspaceRestore({
+      snapshot,
+      runtimeSessions: useSessionStore.getState().sessions,
+      managedSessions,
+      workspaces: currentWorkspaceStore.workspaces,
+      providers: config.providers,
+    });
+
+    // 先切换到快照骨架，后续动作只做原位替换，避免分屏比例和锁定状态被破坏。
+    layout.restoreSavedWorkspace(savedWorkspaceId);
+    const restoreErrors: string[] = [];
+    for (const action of actions) {
+      const actionError = await applyRestoreAction(action, {
+        replaceSession: layout.replaceSession,
+      });
+      if (actionError) {
+        restoreErrors.push(actionError);
+        layout.closeTab(action.leafId, action.oldTabId);
+        layout.setRestoreError(action.leafId, actionError);
+      }
+    }
+    layout.persist();
+    if (restoreErrors.length > 0) {
+      showToast(`工作区恢复完成，但有 ${restoreErrors.length} 个会话未恢复`);
+    }
+  }, [showToast]);
 
   // 启动
   useEffect(() => {
@@ -721,64 +875,113 @@ export default function App(): React.JSX.Element {
       if (!workspaceStore.expandedIds.has(ws.id)) {
         workspaceStore.toggleExpand(ws.id);
       }
-      if (sidebarCollapsed) {
+      if (!sidebarVisible) {
         setSidebarLocateWorkspaceId(ws.id);
-        setSidebarCollapsed(false);
+        setSidebarVisible(true);
         return;
       }
       dispatchWorkspaceLocation(ws.id);
     };
     window.addEventListener("app:activate-workspace", onActivateIdx as EventListener);
     return () => window.removeEventListener("app:activate-workspace", onActivateIdx as EventListener);
-  }, [sidebarCollapsed]);
+  }, [setSidebarVisible, sidebarVisible]);
 
   const toggleSidebar = useCallback((): void => {
-    setSidebarCollapsed((c) => !c);
+    toggleSidebarVisibility();
     window.setTimeout(() => window.dispatchEvent(new Event("app:refit")), 50);
-  }, []);
+  }, [toggleSidebarVisibility]);
+
+  // 切回终端视图时终端刚从 hidden 恢复，尺寸为 0，需重新 fit 一次。
+  useEffect(() => {
+    if (mainView !== "panes") return;
+    window.setTimeout(() => window.dispatchEvent(new Event("app:refit")), 50);
+  }, [mainView]);
 
   return (
-    <div className="app-shell" style={sidebarCollapsed ? undefined : { "--sidebar-width": `${sidebarWidth}px` } as React.CSSProperties}>
-      {!sidebarCollapsed && (
-        <>
-          <Sidebar
-            locateWorkspaceId={sidebarLocateWorkspaceId}
-            onLocateWorkspaceHandled={clearSidebarLocation}
-            onResume={resumeSession}
-            onNewShell={newShell}
-            onNewSession={newSession}
-            onQuickShell={quickShell}
-          />
-          <div className="sidebar-resizer" onMouseDown={startSidebarDrag} />
-        </>
-      )}
-      <main className="app-main">
-        <button
-          type="button"
-          className={`sidebar-toggle${sidebarCollapsed ? " sidebar-toggle-visible" : ""}`}
-          onClick={toggleSidebar}
-          title={sidebarCollapsed ? "显示侧边栏" : "隐藏侧边栏"}
-        >
-          {sidebarCollapsed
-            ? <PanelLeftOpen size={16} strokeWidth={1.5} />
-            : <PanelLeftClose size={16} strokeWidth={1.5} />}
-        </button>
-        <div className="pane-grid-wrap">
-          <PaneGrid
-            onCloseTab={closeSessionTab}
-            onClosePane={closeSessionPane}
-            closingSessionIds={closingSessionIds}
-            closingPaneIds={closingPaneIds}
-          />
-        </div>
-      </main>
+    <div className="app-frame">
+      <TitleBar />
+      <div
+        className="app-shell"
+        style={!sidebarVisible ? undefined : { "--sidebar-width": `${sidebarWidth}px` } as React.CSSProperties}
+      >
+        <ActivityBar />
+        {sidebarVisible && (
+          <>
+            <Sidebar
+              locateWorkspaceId={sidebarLocateWorkspaceId}
+              onLocateWorkspaceHandled={clearSidebarLocation}
+              onResume={resumeSession}
+              onNewShell={newShell}
+              onNewSession={newSession}
+              onQuickShell={quickShell}
+              onRestoreSavedWorkspace={(savedWorkspaceId) => {
+                void restoreSavedWorkspace(savedWorkspaceId);
+              }}
+            />
+            <div className="sidebar-resizer" onMouseDown={startSidebarDrag} />
+          </>
+        )}
+        <main className="app-main">
+          <button
+            type="button"
+            className={`sidebar-toggle${!sidebarVisible ? " sidebar-toggle-visible" : ""}`}
+            onClick={toggleSidebar}
+            title={!sidebarVisible ? "显示侧边栏" : "隐藏侧边栏"}
+          >
+            {!sidebarVisible
+              ? <PanelLeftOpen size={16} strokeWidth={1.5} />
+              : <PanelLeftClose size={16} strokeWidth={1.5} />}
+          </button>
+          {/* PaneGrid 始终挂载：卸载会销毁 xterm 实例并丢失 PTY 输出回放，
+              故切走时仅隐藏，切回时派发 app:refit 让终端重新适配尺寸。 */}
+          <div
+            className={`pane-workspace-shell${wallpaperActive ? " wallpaper-active" : ""}`}
+            style={
+              {
+                display: mainView === "panes" ? "flex" : "none",
+                "--wallpaper-glass-blur": `${wallpaper.glassBlur}px`,
+                "--wallpaper-terminal-opacity": wallpaper.terminalOpacity,
+              } as React.CSSProperties
+            }
+          >
+            <MainWallpaperLayer />
+            <div className="pane-workspace-content">
+              <div className="pane-grid-wrap">
+                <PaneGrid
+                  onCloseTab={closeSessionTab}
+                  onClosePane={closeSessionPane}
+                  closingSessionIds={closingSessionIds}
+                  closingPaneIds={closingPaneIds}
+                  onCreateTerminal={openTerminalCreate}
+                />
+              </div>
+            </div>
+          </div>
+          {mainView === "usage" && <UsageView />}
+          {mainView === "providers" && <ProviderView />}
+          {mainView === "settings" && <SettingsView />}
+        </main>
 
-      <WorkspaceDialog />
-      <SettingsDialog />
-      <ConfirmDialog />
-      <PaneTaskDrawer />
+        <WorkspaceDialog />
+        <TerminalCreateDialog
+          open={terminalCreateOpen}
+          workspaces={workspaces}
+          providers={providers}
+          initialWorkspaceId={terminalCreateWorkspaceId}
+          error={terminalCreateError}
+          creating={terminalCreating}
+          onClose={() => {
+            setTerminalCreateOpen(false);
+            setTerminalCreateError(null);
+          }}
+          onCreate={createTerminal}
+        />
+        <ConfirmDialog />
+        <PaneTaskDrawer />
 
-      {toast && <div className="app-toast">{toast}</div>}
+        {toast && <div className="app-toast">{toast}</div>}
+      </div>
+      <StatusBar />
     </div>
   );
 }

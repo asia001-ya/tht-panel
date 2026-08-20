@@ -7,14 +7,19 @@ import type { ManagedSession } from "../../api/types";
 import { useWorkspaceStore } from "../../store/workspaceStore";
 import { useUiStore } from "../../store/uiStore";
 import { useLayoutStore } from "../../store/layoutStore";
+import { useSessionStore } from "../../store/sessionStore";
+import { buildSessionRefs } from "../../lib/workspaceSnapshots";
+import { pendingSessions } from "../../App";
 import { WorkspaceItem } from "./WorkspaceItem";
 import { SidebarNavItem } from "./SidebarNavItem";
 import { RecentSessionList } from "./RecentSessionList";
 import { SidebarFooter } from "./SidebarFooter";
 import {
+  ChartLine,
   LayoutTemplate,
   Save,
   Search,
+  Server,
   SquarePen,
   SquareTerminal,
   X,
@@ -28,6 +33,7 @@ export interface SidebarProps {
   onNewShell: (wsId: string) => void;
   onNewSession: (wsId: string) => void;
   onQuickShell: () => void;
+  onRestoreSavedWorkspace?: (savedWorkspaceId: string) => void;
 }
 
 /**
@@ -46,15 +52,19 @@ function scrollWorkspaceIntoView(workspaceId: string): void {
  * @param props 定位目标以及会话、Shell 与快捷终端操作回调。
  * @returns 侧边栏界面。
  */
-export function Sidebar({ locateWorkspaceId, onLocateWorkspaceHandled, onResume, onNewShell, onNewSession, onQuickShell }: SidebarProps): React.JSX.Element {
+export function Sidebar({ locateWorkspaceId, onLocateWorkspaceHandled, onResume, onNewShell, onNewSession, onQuickShell, onRestoreSavedWorkspace }: SidebarProps): React.JSX.Element {
   const workspaces = useWorkspaceStore((s) => s.workspaces);
   const loadWorkspaces = useWorkspaceStore((s) => s.load);
   const loadAllHistories = useWorkspaceStore((s) => s.loadAllHistories);
   const openWorkspaceDialog = useUiStore((s) => s.openWorkspaceDialog);
+  const mainView = useUiStore((s) => s.mainView);
+  const setMainView = useUiStore((s) => s.setMainView);
   const savedWorkspaces = useLayoutStore((s) => s.savedWorkspaces);
   const saveCurrentWorkspace = useLayoutStore((s) => s.saveCurrentWorkspace);
   const restoreSavedWorkspace = useLayoutStore((s) => s.restoreSavedWorkspace);
   const removeSavedWorkspace = useLayoutStore((s) => s.removeSavedWorkspace);
+  const layoutTree = useLayoutStore((s) => s.tree);
+  const runtimeSessions = useSessionStore((s) => s.sessions);
 
   const [searchOpen, setSearchOpen] = useState(false);
   const [filter, setFilter] = useState("");
@@ -123,6 +133,18 @@ export function Sidebar({ locateWorkspaceId, onLocateWorkspaceHandled, onResume,
           label="保存当前工作区"
           onClick={() => setSavingWorkspace(true)}
         />
+        <SidebarNavItem
+          icon={<ChartLine {...ICON_DEFAULTS} />}
+          label="Token 用量"
+          active={mainView === "usage"}
+          onClick={() => setMainView("usage")}
+        />
+        <SidebarNavItem
+          icon={<Server {...ICON_DEFAULTS} />}
+          label="供应商"
+          active={mainView === "providers"}
+          onClick={() => setMainView("providers")}
+        />
       </nav>
 
       {savingWorkspace && (
@@ -139,7 +161,10 @@ export function Sidebar({ locateWorkspaceId, onLocateWorkspaceHandled, onResume,
                 setWorkspaceName("");
               }
               if (event.key === "Enter" && workspaceName.trim()) {
-                saveCurrentWorkspace(workspaceName);
+                saveCurrentWorkspace(
+                  workspaceName,
+                  buildSessionRefs(layoutTree, runtimeSessions, useWorkspaceStore.getState().historyCache, pendingSessions),
+                );
                 setSavingWorkspace(false);
                 setWorkspaceName("");
               }
@@ -150,7 +175,10 @@ export function Sidebar({ locateWorkspaceId, onLocateWorkspaceHandled, onResume,
             className="sidebar-save-confirm"
             disabled={!workspaceName.trim()}
             onClick={() => {
-              saveCurrentWorkspace(workspaceName);
+              saveCurrentWorkspace(
+                workspaceName,
+                buildSessionRefs(layoutTree, runtimeSessions, useWorkspaceStore.getState().historyCache, pendingSessions),
+              );
               setSavingWorkspace(false);
               setWorkspaceName("");
             }}
@@ -212,7 +240,10 @@ export function Sidebar({ locateWorkspaceId, onLocateWorkspaceHandled, onResume,
                 <button
                   type="button"
                   className="saved-workspace-open"
-                  onClick={() => restoreSavedWorkspace(saved.id)}
+                  onClick={() => {
+                    if (onRestoreSavedWorkspace) onRestoreSavedWorkspace(saved.id);
+                    else restoreSavedWorkspace(saved.id);
+                  }}
                   title={saved.name}
                 >
                   <LayoutTemplate size={14} strokeWidth={1.5} />

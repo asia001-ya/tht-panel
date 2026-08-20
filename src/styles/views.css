@@ -1,0 +1,371 @@
+/* views.css — 主区域功能页（用量仪表盘 / 供应商 / 设置）的共用外壳与仪表盘专属样式。
+   配色一律走 theme.css 的令牌，明暗主题自动跟随，不写第二套规则。 */
+
+/* ---------- 页面外壳 ---------- */
+
+.view-page {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 24px 28px 32px;
+  background: var(--bg);
+  color: var(--fg);
+}
+
+.view-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  flex-wrap: wrap;
+  margin-bottom: 20px;
+}
+
+.view-title-group {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+
+.view-title {
+  margin: 0;
+  font-size: 20px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+}
+
+.view-subtitle {
+  color: var(--fg-faint);
+  font-size: 12px;
+}
+
+.view-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.view-select {
+  height: 32px;
+  padding: 0 8px;
+  background: var(--panel-2);
+  color: var(--fg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  font-family: inherit;
+  font-size: 12px;
+  outline: none;
+}
+.view-select:focus {
+  border-color: var(--fg-dim);
+  box-shadow: 0 0 0 2px var(--focus-ring);
+}
+
+/* 分段切换器（时间窗口） */
+.view-segmented {
+  display: inline-flex;
+  height: 32px;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+}
+.view-segmented-item {
+  padding: 0 12px;
+  background: transparent;
+  color: var(--fg-dim);
+  border: none;
+  border-right: 1px solid var(--border);
+  font-family: inherit;
+  font-size: 12px;
+  cursor: pointer;
+  transition: background 0.12s, color 0.12s;
+}
+.view-segmented-item:last-child {
+  border-right: none;
+}
+.view-segmented-item:hover {
+  background: var(--hover);
+}
+.view-segmented-item.active {
+  background: var(--accent);
+  color: var(--accent-fg);
+}
+
+.view-icon-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  background: transparent;
+  color: var(--fg-dim);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  transition: background 0.12s, color 0.12s;
+}
+.view-icon-btn:hover:not(:disabled) {
+  background: var(--hover);
+  color: var(--fg);
+}
+.view-icon-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+/* 刷新中的转圈 */
+.spinning {
+  animation: view-spin 1s linear infinite;
+}
+@keyframes view-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.view-panel {
+  margin-bottom: 20px;
+  padding: 18px;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+}
+
+.view-panel-title {
+  margin-bottom: 12px;
+  color: var(--fg-faint);
+  font-size: 11px;
+  font-weight: 500;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.view-empty {
+  padding: 32px 0;
+  color: var(--fg-faint);
+  font-size: 13px;
+  text-align: center;
+}
+.view-empty-compact {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 16px 0;
+  font-size: 12px;
+}
+
+.view-error {
+  margin-bottom: 16px;
+  padding: 10px 14px;
+  color: var(--danger);
+  background: color-mix(in srgb, var(--danger) 8%, transparent);
+  border: 1px solid color-mix(in srgb, var(--danger) 32%, transparent);
+  border-radius: var(--radius-sm);
+  font-size: 12px;
+}
+
+/* 壁纸设置：控件保持紧凑，预览固定尺寸避免拖动时布局跳动。 */
+.settings-wallpaper-file {
+  display: none;
+}
+.settings-wallpaper-preview-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin: 4px 0 12px;
+}
+.settings-wallpaper-preview {
+  width: 152px;
+  height: 78px;
+  flex: 0 0 auto;
+  object-fit: cover;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+}
+.settings-wallpaper-empty {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--fg-faint);
+  background: var(--panel-2);
+  font-size: 11px;
+}
+.settings-wallpaper-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+.settings-slider-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 8px 18px;
+  margin-top: 10px;
+}
+.settings-slider-row {
+  display: grid;
+  grid-template-columns: minmax(90px, 1fr) minmax(90px, 1.4fr) 48px;
+  align-items: center;
+  gap: 8px;
+  color: var(--fg-dim);
+  font-size: 12px;
+}
+.settings-slider-row input[type="range"] {
+  width: 100%;
+  accent-color: var(--accent);
+}
+.settings-slider-row output {
+  color: var(--fg);
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+}
+
+/* ---------- KPI 卡片 ---------- */
+
+.metric-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  gap: 14px;
+  margin-bottom: 20px;
+}
+
+.metric-card {
+  position: relative;
+  min-width: 0;
+  padding: 14px 16px;
+  overflow: hidden;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+}
+
+.metric-card-stripe {
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: 3px;
+  opacity: 0.85;
+}
+
+.metric-card-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border-radius: var(--radius-sm);
+}
+
+.metric-card-label {
+  margin-top: 10px;
+  color: var(--fg-faint);
+  font-size: 11px;
+  font-weight: 500;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+}
+
+.metric-card-value {
+  margin-top: 4px;
+  overflow: hidden;
+  font-size: 24px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.metric-card-track {
+  margin-top: 8px;
+  height: 5px;
+  overflow: hidden;
+  background: var(--border);
+  border-radius: 3px;
+}
+.metric-card-fill {
+  height: 100%;
+  border-radius: 3px;
+  transition: width 0.5s ease;
+}
+
+/* ---------- 图表 ---------- */
+
+/* ResponsiveContainer 依赖父容器给定高度，且需 min-width:0 才能随窗口收缩 */
+.chart-box {
+  height: 280px;
+  min-width: 0;
+}
+
+/* ---------- 分模型列表 ---------- */
+
+.model-list {
+  display: flex;
+  flex-direction: column;
+}
+
+.model-row {
+  display: grid;
+  grid-template-columns: 54px minmax(0, 1fr) 120px 76px;
+  align-items: center;
+  gap: 12px;
+  padding: 9px 0;
+  border-bottom: 1px solid var(--border);
+  font-size: 12px;
+}
+.model-row:last-child {
+  border-bottom: none;
+}
+
+.model-driver {
+  padding: 2px 6px;
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  color: var(--fg-dim);
+  font-size: 10px;
+  text-align: center;
+}
+.model-driver-claude {
+  color: var(--chart-1);
+  border-color: color-mix(in srgb, var(--chart-1) 40%, transparent);
+}
+.model-driver-codex {
+  color: var(--chart-2);
+  border-color: color-mix(in srgb, var(--chart-2) 40%, transparent);
+}
+
+.model-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.model-share {
+  position: relative;
+  height: 5px;
+  background: var(--border);
+  border-radius: 3px;
+  overflow: hidden;
+}
+.model-share-fill {
+  display: block;
+  height: 100%;
+  border-radius: 3px;
+}
+
+.model-total {
+  color: var(--fg-dim);
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+}
+
+/* 窄窗口下隐藏占比条，避免挤压模型名 */
+@media (max-width: 720px) {
+  .model-row {
+    grid-template-columns: 54px minmax(0, 1fr) 76px;
+  }
+  .model-share {
+    display: none;
+  }
+}

@@ -17,6 +17,7 @@ import type {
   PaneTask,
   CreatePaneTaskRequest,
   TaskOutcome,
+  UsageQueryResult,
 } from "./types";
 
 // ---- PTY 会话 ----
@@ -29,14 +30,24 @@ export const ptyKill = (sessionId: string) => invoke<void>("pty_kill", { session
 export const ptyList = () => invoke<PtySessionInfo[]>("pty_list");
 export const ptyDetach = (sessionId: string) => invoke<void>("pty_detach", { sessionId });
 
+// ---- 剪贴板 ----
+export const clipboardSaveImage = (dataUrl: string, fileName?: string) =>
+  invoke<string>("clipboard_save_image", { dataUrl, fileName });
+
 /**
  * 附着到会话并接收输出。后端在 session 锁内先发 snapshot（环形缓冲回放）再发 data，
  * 同一 Channel 消息有序，故前端无需处理时序。返回 Channel 以便需要时手动释放。
  */
-export function ptyAttach(sessionId: string, onMsg: (m: PtyOutputMsg) => void): Channel<PtyOutputMsg> {
+export function ptyAttach(
+  sessionId: string,
+  onMsg: (m: PtyOutputMsg) => void,
+  onError?: (error: unknown) => void,
+): Channel<PtyOutputMsg> {
   const channel = new Channel<PtyOutputMsg>();
   channel.onmessage = onMsg;
-  void invoke<void>("pty_attach", { sessionId, channel });
+  void invoke<void>("pty_attach", { sessionId, channel }).catch((error: unknown) => {
+    onError?.(error);
+  });
   return channel;
 }
 
@@ -72,6 +83,26 @@ export const aiSessionDetect = (args: {
 // ---- 原生 AI 会话（不经过 PowerShell）----
 export const aiPrompt = (req: NativePromptRequest) =>
   invoke<string>("ai_prompt", { req });
+
+// ---- Token 用量统计 ----
+
+/**
+ * 查询用量统计（只读后端缓存，不触发磁盘扫描）。
+ * @param workspaceId 限定工作空间；省略表示统计全部项目。
+ * @param rangeDays 统计最近天数；省略用后端默认 30 天。
+ * @returns 按日期升序的序列与各维度汇总。
+ */
+export const usageQuery = (workspaceId?: string, rangeDays?: number) =>
+  invoke<UsageQueryResult>("usage_query", { workspaceId, rangeDays });
+
+/**
+ * 重新扫描会话文件后返回最新统计。耗时随会话文件总量增长。
+ * @param workspaceId 限定工作空间；省略表示统计全部项目。
+ * @param rangeDays 统计最近天数；省略用后端默认 30 天。
+ * @returns 扫描后的最新统计。
+ */
+export const usageRefresh = (workspaceId?: string, rangeDays?: number) =>
+  invoke<UsageQueryResult>("usage_refresh", { workspaceId, rangeDays });
 
 // ---- 窗格协作任务 ----
 

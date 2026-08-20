@@ -398,11 +398,19 @@ describe("App 会话编排", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "新会话" }));
 
+    fireEvent.click(screen.getByRole("radio", { name: "Claude" }));
+    fireEvent.change(screen.getByLabelText("渠道商"), {
+      target: { value: providers[0].id },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "创建会话" }));
+
     await waitFor(() => expect(commandMocks.ptySpawn).toHaveBeenCalledTimes(1));
     expect(commandMocks.ptySpawn).toHaveBeenCalledWith({
       workspaceId: workspace.id,
       kind: "claude",
       providerId: providers[0].id,
+      strictProvider: true,
+      executionMode: "default",
       cols: 80,
       rows: 24,
     });

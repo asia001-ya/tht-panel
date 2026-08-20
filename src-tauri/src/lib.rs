@@ -16,6 +16,7 @@ pub mod native_ai;
 pub mod pty;
 pub mod state;
 pub mod tray;
+pub mod usage;
 
 use tauri::{Manager, WindowEvent};
 
@@ -62,6 +63,7 @@ pub fn run() {
             commands::config_cmds::workspace_delete,
             commands::config_cmds::layout_get,
             commands::config_cmds::layout_save,
+            commands::clipboard_cmds::clipboard_save_image,
             commands::history_cmds::history_list,
             commands::app_quit,
             commands::session_cmds::managed_session_list,
@@ -76,6 +78,8 @@ pub fn run() {
             commands::task_cmds::task_forward,
             commands::task_cmds::task_close,
             commands::task_cmds::task_cancel,
+            commands::usage_cmds::usage_query,
+            commands::usage_cmds::usage_refresh,
             native_ai::ai_prompt,
         ])
         .run(tauri::generate_context!())

@@ -11,6 +11,9 @@ export type AgentKind = "claude" | "codex" | "shell";
 /** 工作空间级 AI 类型（不含 shell） */
 export type WorkspaceAgent = "claude" | "codex";
 
+/** AI 终端的权限执行模式。 */
+export type TerminalExecutionMode = "default" | "yolo";
+
 /** 可复用的命名供应商配置；同一 driver 可以保存多套配置。 */
 export interface ProviderProfile extends AgentConfig {
   id: string;
@@ -62,6 +65,32 @@ export interface GlobalConfig {
   claudeDefaults: AgentConfig; // 「统一配置」时 claude 用这套
   codexDefaults: AgentConfig; // 「统一配置」时 codex 用这套
   providers: ProviderProfile[];
+  /** 主工作区壁纸；可选以兼容旧版本配置文件。 */
+  wallpaper?: WallpaperSettings;
+}
+
+/** 壁纸来源类型。当前桌面端先支持图片，保留 none 便于扩展视频。 */
+export type WallpaperKind = "none" | "image";
+
+/** 壁纸填充方式，与参考项目保持相同语义。 */
+export type WallpaperFit = "cover" | "contain" | "tile" | "center";
+
+/**
+ * 主区壁纸设置。
+ * `file` 可以是导入后的文件名/路径，`dataUrl` 用于浏览器与无后端环境的
+ * 即时预览；两者均为空时视为未选择资源。
+ */
+export interface WallpaperSettings {
+  enabled: boolean;
+  kind: WallpaperKind;
+  file?: string | null;
+  dataUrl?: string | null;
+  fit: WallpaperFit;
+  opacity: number;
+  blur: number;
+  dim: number;
+  terminalOpacity: number;
+  glassBlur: number;
 }
 
 /** 分屏布局二叉树节点 */
@@ -202,6 +231,7 @@ export interface SpawnRequest {
   kind: AgentKind; // claude/codex/shell
   providerId?: string;
   strictProvider?: boolean; // true=严格按保存引用选择供应商；缺失 ID 表示系统配置
+  executionMode?: TerminalExecutionMode; // default=沿用 CLI 权限；yolo=跳过确认与沙箱
   resumeSessionId?: string; // 恢复历史会话时传 AI sessionId
   cols: number;
   rows: number; // 目标 leaf 当前尺寸，避免启动后立刻 resize 重绘
@@ -255,4 +285,42 @@ export interface NativePromptRequest {
   workspaceId: string;
   providerId: string;
   prompt: string;
+}
+
+// ---- Token 用量统计 ----
+// 与 src-tauri/src/usage/model.rs 一一对应。
+//
+// 关键语义差异（实测确认，计算总量/命中率时必须按 driver 分支，见 lib/usage.ts）：
+// - Claude 的 inputTokens 不含缓存，缓存另计在 cacheReadTokens / cacheCreationTokens
+// - Codex  的 inputTokens 已含 cacheReadTokens（后者是前者的子集）
+
+/** 一组 token 用量累计值 */
+export interface UsageTotals {
+  inputTokens: number;
+  outputTokens: number;
+  cacheReadTokens: number;
+  cacheCreationTokens: number;
+}
+
+/** 按天聚合的用量点，claude / codex 分列 */
+export interface UsageDayPoint {
+  date: string; // YYYY-MM-DD（本地时区）
+  claude: UsageTotals;
+  codex: UsageTotals;
+}
+
+/** 按模型聚合的用量 */
+export interface ModelUsage {
+  model: string;
+  driver: string; // claude | codex
+  totals: UsageTotals;
+}
+
+/** usage_query / usage_refresh 的返回结构 */
+export interface UsageQueryResult {
+  series: UsageDayPoint[]; // 按日期升序
+  claudeTotals: UsageTotals;
+  codexTotals: UsageTotals;
+  byModel: ModelUsage[]; // 用量降序
+  lastScannedAt: string; // RFC3339；从未扫描时为空串
 }

@@ -16,7 +16,9 @@ use std::path::Path;
 
 use base64::Engine;
 
-use crate::config::model::{AgentConfig, GlobalConfig, ProviderProfile, SpawnRequest, Workspace};
+use crate::config::model::{
+    AgentConfig, GlobalConfig, ProviderProfile, SpawnRequest, TerminalExecutionMode, Workspace,
+};
 use crate::error::AppError;
 use crate::pty::activity::AGENT_EXIT_MARKER_TEXT;
 
@@ -150,6 +152,17 @@ pub fn build_resolved_launch(
     for a in &resolved_cfg.extra_args {
         if !a.trim().is_empty() {
             ai_args.push(a.clone());
+        }
+    }
+
+    // YOLO 模式显式映射到各 CLI 的危险参数；默认模式保持 CLI 原有策略。
+    if req.execution_mode == TerminalExecutionMode::Yolo {
+        match kind.as_str() {
+            "codex" => ai_args.insert(
+                0,
+                "--dangerously-bypass-approvals-and-sandbox".to_string(),
+            ),
+            _ => ai_args.push("--dangerously-skip-permissions".to_string()),
         }
     }
 
@@ -458,6 +471,7 @@ mod tests {
             kind: "claude".to_string(),
             provider_id: Some(provider_id.to_string()),
             strict_provider: false,
+            execution_mode: TerminalExecutionMode::Default,
             resume_session_id: None,
             cols: 80,
             rows: 24,
@@ -633,6 +647,40 @@ mod tests {
         expect_env(&launch, "COLORFGBG", "0;15");
         assert_eq!(launch.env.len(), 1, "严格系统模式只应注入主题环境");
         assert!(!script.contains("project-default-model"));
+    }
+
+    /// YOLO 模式应为 Claude 追加危险权限参数。
+    #[test]
+    fn yolo_mode_adds_claude_permission_flag() {
+        let mut req = request("unused");
+        req.provider_id = None;
+        req.execution_mode = TerminalExecutionMode::Yolo;
+        let launch = build_resolved_launch(
+            &GlobalConfig::default(),
+            Some(&workspace()),
+            &req,
+            Path::new("."),
+        )
+        .expect("YOLO 启动描述应生成");
+        assert!(decode_script(&launch).contains("--dangerously-skip-permissions"));
+    }
+
+    /// YOLO 模式应为 Codex 追加跳过审批与沙箱参数。
+    #[test]
+    fn yolo_mode_adds_codex_bypass_flag() {
+        let mut req = request("unused");
+        req.kind = "codex".to_string();
+        req.provider_id = None;
+        req.execution_mode = TerminalExecutionMode::Yolo;
+        let launch = build_resolved_launch(
+            &GlobalConfig::default(),
+            Some(&workspace()),
+            &req,
+            Path::new("."),
+        )
+        .expect("YOLO 启动描述应生成");
+        assert!(decode_script(&launch)
+            .contains("--dangerously-bypass-approvals-and-sandbox"));
     }
 
     /// 验证 shell 启动在严格模式下仍完全绕过供应商校验。

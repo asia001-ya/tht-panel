@@ -1,8 +1,9 @@
 /**
  * UI 开关 store（zustand v5）。
- * 集中管理对话框 / 确认框的开合状态，避免这些一次性 UI 状态在组件树里逐层 prop 透传。
- * 对话框宿主（App）订阅此 store 渲染 WorkspaceDialog / SettingsDialog / ConfirmDialog，
- * 任意组件（侧边栏按钮、菜单等）通过 actions 触发开合。
+ * 集中管理主区域视图切换与对话框 / 确认框的开合状态，
+ * 避免这些一次性 UI 状态在组件树里逐层 prop 透传。
+ * 对话框宿主（App）订阅此 store 渲染 WorkspaceDialog / ConfirmDialog，
+ * 并按 mainView 决定主区域渲染终端网格还是各功能页。
  */
 import { create } from "zustand";
 import type { Workspace } from "../api/types";
@@ -28,16 +29,20 @@ interface ConfirmOptions {
   onConfirm: () => void;
 }
 
-/** 设置对话框可切换的内容页。 */
-export type SettingsSection = "general" | "providers";
+/**
+ * 主区域视图。
+ * 本应用无路由库，视图切换即由此状态驱动（参见 App.tsx 的分支渲染）。
+ * panes=终端网格（默认），其余为各功能页。
+ */
+export type MainView = "panes" | "usage" | "providers" | "settings";
 
 interface UiState {
   /** 工作空间新建/编辑对话框 */
   workspaceDialog: WorkspaceDialogState;
-  /** 全局设置对话框是否打开 */
-  settingsOpen: boolean;
-  /** 设置对话框当前内容页 */
-  settingsSection: SettingsSection;
+  /** 当前主区域视图 */
+  mainView: MainView;
+  /** 左侧资源面板是否可见；ActivityBar 再次点击当前模块时切换。 */
+  sidebarVisible: boolean;
   /** 通用确认框；null=未激活 */
   confirm: ConfirmState | null;
 
@@ -45,12 +50,14 @@ interface UiState {
   openWorkspaceDialog: (editing?: Workspace) => void;
   /** 关闭工作空间对话框并清除 editing */
   closeWorkspaceDialog: () => void;
-  /** 打开全局设置对话框，默认进入常规页 */
-  openSettings: (section?: SettingsSection) => void;
-  /** 切换设置对话框内容页 */
-  setSettingsSection: (section: SettingsSection) => void;
-  /** 关闭全局设置对话框 */
-  closeSettings: () => void;
+  /** 切换主区域视图 */
+  setMainView: (view: MainView) => void;
+  /** 按 cc-pane 语义切换模块：同一模块切侧栏，切换模块时自动展开。 */
+  toggleMainView: (view: MainView) => void;
+  /** 直接设置侧栏可见性。 */
+  setSidebarVisible: (visible: boolean) => void;
+  /** 切换侧栏可见性。 */
+  toggleSidebar: () => void;
   /** 打开确认框，传入标题/内容/确认回调 */
   openConfirm: (o: ConfirmOptions) => void;
   /** 关闭确认框 */
@@ -60,17 +67,21 @@ interface UiState {
 /** UI 开关全局 store */
 export const useUiStore = create<UiState>((set) => ({
   workspaceDialog: { open: false, editing: undefined },
-  settingsOpen: false,
-  settingsSection: "general",
+  mainView: "panes",
+  sidebarVisible: true,
   confirm: null,
 
   openWorkspaceDialog: (editing) => set({ workspaceDialog: { open: true, editing } }),
   closeWorkspaceDialog: () => set({ workspaceDialog: { open: false, editing: undefined } }),
 
-  openSettings: (section = "general") =>
-    set({ settingsOpen: true, settingsSection: section }),
-  setSettingsSection: (settingsSection) => set({ settingsSection }),
-  closeSettings: () => set({ settingsOpen: false }),
+  setMainView: (mainView) => set({ mainView }),
+  toggleMainView: (mainView) => set((state) => (
+    state.mainView === mainView
+      ? { sidebarVisible: !state.sidebarVisible }
+      : { mainView, sidebarVisible: true }
+  )),
+  setSidebarVisible: (sidebarVisible) => set({ sidebarVisible }),
+  toggleSidebar: () => set((state) => ({ sidebarVisible: !state.sidebarVisible })),
 
   openConfirm: (o) => set({ confirm: { open: true, ...o } }),
   closeConfirm: () => set({ confirm: null }),

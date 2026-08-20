@@ -32,6 +32,17 @@ export {
   Save,
   Server,
   ListTodo,
+  ChartLine,
+  Database,
+  Sparkles,
+  PanelTop,
+  FolderKanban,
+  Activity,
+  Monitor,
+  Image,
+  Command,
+  Maximize2,
+  Minus,
 } from "lucide-react";
 
 /** 全局图标默认 props */

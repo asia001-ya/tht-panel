@@ -11,6 +11,6 @@ pub mod store;
 pub use model::{
     AgentConfig, GlobalConfig, ManagedSession, PersistedLayout, PtyOutputMsg, PtySessionInfo,
     SessionExitPayload, SessionHistoryEntry, SessionState, SessionStatePayload, SpawnRequest,
-    Workspace, EVT_QUIT_REQUEST, EVT_SESSION_EXIT, EVT_SESSION_STATE,
+    WallpaperSettings, Workspace, EVT_QUIT_REQUEST, EVT_SESSION_EXIT, EVT_SESSION_STATE,
 };
 pub use store::ConfigStore;

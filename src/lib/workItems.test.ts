@@ -1,6 +1,12 @@
 import { describe, expect, it } from "vitest";
-import type { ManagedSession, PtySessionInfo } from "../api/types";
+import type {
+  ManagedSession,
+  ProviderProfile,
+  PtySessionInfo,
+  Workspace,
+} from "../api/types";
 import {
+  resolveActiveTabContext,
   workspaceActivationTarget,
   workspaceIdForTab,
 } from "./workItems";
@@ -25,6 +31,30 @@ const terminalSession: PtySessionInfo = {
   createdAt: "2026-07-12T12:00:00.000Z",
 };
 
+const claudeTerminalSession: PtySessionInfo = {
+  ...terminalSession,
+  sessionId: "pty-claude",
+  kind: "claude",
+  title: "Claude",
+};
+
+const workspace: Workspace = {
+  id: "project-terminal",
+  name: "终端项目",
+  path: "D:\\AI\\terminal",
+  agent: "claude",
+  useGlobalConfig: true,
+  sortOrder: 0,
+  createdAt: "2026-07-12T12:00:00.000Z",
+  defaultProviderId: "claude-main",
+};
+
+const provider: ProviderProfile = {
+  id: "claude-main",
+  name: "Claude 主源",
+  driver: "claude",
+};
+
 describe("工作项项目归属", () => {
   it("从原生会话 Tab 找到项目", () => {
     expect(
@@ -44,6 +74,43 @@ describe("工作项项目归属", () => {
         {},
       ),
     ).toBe("project-terminal");
+  });
+});
+
+describe("活动 Tab 上下文", () => {
+  it("解析终端 Tab 的工作空间、供应商和运行状态", () => {
+    expect(
+      resolveActiveTabContext(
+        "pty-claude",
+        { "pty-claude": claudeTerminalSession },
+        {},
+        [workspace],
+        [provider],
+      ),
+    ).toMatchObject({
+      title: "Claude",
+      workspace,
+      kind: "claude",
+      state: "running",
+      provider,
+    });
+  });
+
+  it("解析原生 Tab 的会话名称和项目默认供应商", () => {
+    const nativeWorkspace = { ...workspace, id: "project-native", name: "原生项目" };
+    expect(
+      resolveActiveTabContext(
+        "native:conversation-1",
+        {},
+        { "project-native": [nativeConversation] },
+        [nativeWorkspace],
+        [provider],
+      ),
+    ).toMatchObject({
+      title: "原生会话",
+      workspace: nativeWorkspace,
+      kind: "claude",
+    });
   });
 });
 

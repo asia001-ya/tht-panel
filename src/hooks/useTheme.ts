@@ -5,17 +5,26 @@
  * 通常在根组件 App 里调用一次。
  */
 import { useEffect } from "react";
-import { useSettingsStore } from "../store/settingsStore";
-import { applyTheme, forEachTerm } from "../terminal/xtermManager";
+import { DEFAULT_WALLPAPER, useSettingsStore } from "../store/settingsStore";
+import {
+  applyTheme,
+  forEachTerm,
+  setTerminalTransparency,
+} from "../terminal/xtermManager";
 
 /** 将当前主题应用到 DOM 与所有活跃 xterm 终端 */
 export function useTheme(): void {
   const theme = useSettingsStore((s) => s.config?.theme);
+  const wallpaper = useSettingsStore((s) => s.config?.wallpaper ?? DEFAULT_WALLPAPER);
+  const terminalOpacity = wallpaper.enabled ? wallpaper.terminalOpacity : 1;
   useEffect(() => {
     if (!theme) return; // 配置未加载完成时不动 DOM
     // 驱动整套 CSS 变量切换
     document.documentElement.dataset.theme = theme;
     // 同步终端配色（xterm 5 支持运行时改 options.theme）
-    forEachTerm((term) => applyTheme(term, theme));
-  }, [theme]);
+    forEachTerm((term) => {
+      applyTheme(term, theme, terminalOpacity);
+      setTerminalTransparency(term, terminalOpacity < 0.999);
+    });
+  }, [terminalOpacity, theme]);
 }

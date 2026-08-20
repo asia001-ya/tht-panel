@@ -13,15 +13,31 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import type { Terminal } from "@xterm/xterm";
 import type { FitAddon } from "@xterm/addon-fit";
 import type { SearchAddon } from "@xterm/addon-search";
-import { createTerm, tryLoadWebgl, unregisterTerm } from "./xtermManager";
+import {
+  createTerm,
+  setTerminalTransparency,
+  tryLoadWebgl,
+  unregisterTerm,
+} from "./xtermManager";
 import { SearchBar } from "./SearchBar";
 import { ptyAttach, ptyWrite, ptyResize, ptyDetach } from "../api/commands";
-import { useSettingsStore } from "../store/settingsStore";
+import { DEFAULT_WALLPAPER, useSettingsStore } from "../store/settingsStore";
 import { pendingSessions } from "../App";
+import {
+  copyClipboardText,
+  resolveClipboardPayload,
+} from "../lib/clipboard";
+import { isInternalPaneDrag } from "../lib/paneDrag";
 
 /** TerminalPane 属性 */
 interface TerminalPaneProps {
   sessionId: string | null;
+}
+
+interface TerminalContextMenuState {
+  x: number;
+  y: number;
+  hasSelection: boolean;
 }
 
 /**
@@ -31,7 +47,10 @@ export function TerminalPane({ sessionId }: TerminalPaneProps): React.JSX.Elemen
   const containerRef = useRef<HTMLDivElement>(null);
   const termRef = useRef<Terminal | null>(null);
   const fitRef = useRef<FitAddon | null>(null);
+  const pasteRequestRef = useRef<(() => void) | null>(null);
   const [search, setSearch] = useState<SearchAddon | null>(null);
+  const [contextMenu, setContextMenu] = useState<TerminalContextMenuState | null>(null);
+  const [attachError, setAttachError] = useState<string | null>(null);
   const attachedRef = useRef<string | null>(null); // 上一次 attach 的 sessionId，防重复
 
   const doFit = useCallback((): void => {
@@ -52,27 +71,104 @@ export function TerminalPane({ sessionId }: TerminalPaneProps): React.JSX.Elemen
     if (!container) return;
 
     const cfg = useSettingsStore.getState().config;
+    const wallpaper = cfg?.wallpaper ?? DEFAULT_WALLPAPER;
     const { term, fit, search: searchAddon } = createTerm({
       fontSize: cfg?.fontSize ?? 14,
       scrollbackLines: cfg?.scrollbackLines ?? 10000,
       theme: cfg?.theme ?? "light",
+      terminalOpacity: wallpaper.enabled ? wallpaper.terminalOpacity : 1,
     });
     termRef.current = term;
     fitRef.current = fit;
     setSearch(searchAddon);
 
     term.open(container);
-    tryLoadWebgl(term);
+    const transparent = wallpaper.enabled && wallpaper.terminalOpacity < 0.999;
+    if (transparent) setTerminalTransparency(term, true);
+    else tryLoadWebgl(term);
+
+    let lastShortcutPasteAt = 0;
+    const pasteIntoTerminal = (data?: DataTransfer | null): void => {
+      void resolveClipboardPayload(data).then((payload) => {
+        if (payload.kind === "none") return;
+        term.focus();
+        term.paste(payload.text);
+      })
+        .catch(() => term.focus());
+    };
+    const requestSystemPaste = (): void => {
+      lastShortcutPasteAt = Date.now();
+      pasteIntoTerminal();
+    };
+    pasteRequestRef.current = requestSystemPaste;
 
     term.attachCustomKeyEventHandler((e) => {
       if (e.type !== "keydown") return true;
-      if (!e.ctrlKey) return true;
+      const modifier = e.ctrlKey || e.metaKey;
+      if (!modifier) return true;
+      if (!e.altKey && (e.key === "v" || e.key === "V")) {
+        e.preventDefault();
+        requestSystemPaste();
+        return false;
+      }
+      if (!e.altKey && (e.key === "c" || e.key === "C")) {
+        const selection = term.getSelection();
+        if (selection) {
+          e.preventDefault();
+          void copyClipboardText(selection)
+            .then(() => {
+              term.clearSelection();
+              term.focus();
+            })
+            .catch(() => term.focus());
+          return false;
+        }
+        // 无选区时保留 Ctrl+C 的 SIGINT 语义。
+        if (!e.shiftKey) return true;
+      }
       if (!e.shiftKey && !e.altKey && e.key >= "1" && e.key <= "9") return false;
       if (e.shiftKey && (e.key === "F" || e.key === "f")) return false;
       if (e.key === "=" || e.key === "+" || e.code === "NumpadAdd") return false;
       if (e.key === "-" || e.key === "_" || e.code === "NumpadSubtract") return false;
       return true;
     });
+
+    const textarea = term.textarea;
+    const onPaste = (event: ClipboardEvent): void => {
+      event.preventDefault();
+      event.stopPropagation();
+      if (Date.now() - lastShortcutPasteAt < 250) return;
+      pasteIntoTerminal(event.clipboardData);
+    };
+    textarea?.addEventListener("paste", onPaste, true);
+
+    const onContextMenu = (event: MouseEvent): void => {
+      event.preventDefault();
+      event.stopPropagation();
+      term.focus();
+      setContextMenu({
+        x: Math.min(event.clientX, Math.max(8, window.innerWidth - 160)),
+        y: Math.min(event.clientY, Math.max(8, window.innerHeight - 116)),
+        hasSelection: Boolean(term.getSelection()),
+      });
+    };
+    container.addEventListener("contextmenu", onContextMenu);
+
+    const onDragOver = (event: DragEvent): void => {
+      if (!event.dataTransfer) return;
+      if (isInternalPaneDrag(event.dataTransfer)) return;
+      event.preventDefault();
+      event.stopPropagation();
+      event.dataTransfer.dropEffect = "copy";
+    };
+    const onDrop = (event: DragEvent): void => {
+      if (isInternalPaneDrag(event.dataTransfer)) return;
+      event.preventDefault();
+      event.stopPropagation();
+      pasteIntoTerminal(event.dataTransfer);
+    };
+    container.addEventListener("dragover", onDragOver);
+    container.addEventListener("drop", onDrop);
 
     doFit();
 
@@ -93,6 +189,11 @@ export function TerminalPane({ sessionId }: TerminalPaneProps): React.JSX.Elemen
       if (fitTimer !== null) clearTimeout(fitTimer);
       ro.disconnect();
       window.removeEventListener("app:refit", onRefit);
+      textarea?.removeEventListener("paste", onPaste, true);
+      container.removeEventListener("contextmenu", onContextMenu);
+      container.removeEventListener("dragover", onDragOver);
+      container.removeEventListener("drop", onDrop);
+      pasteRequestRef.current = null;
       unregisterTerm(term);
       term.dispose();
       termRef.current = null;
@@ -111,6 +212,7 @@ export function TerminalPane({ sessionId }: TerminalPaneProps): React.JSX.Elemen
 
     let dead = false;
     term.reset();
+    setAttachError(null);
 
     const channel = ptyAttach(sessionId, (msg) => {
       if (dead) return;
@@ -119,6 +221,9 @@ export function TerminalPane({ sessionId }: TerminalPaneProps): React.JSX.Elemen
       } else if (msg.kind === "exit") {
         term.write(`\r\n\x1b[90m[进程已退出 code=${msg.code}]\x1b[0m\r\n`);
       }
+    }, (error) => {
+      if (dead) return;
+      setAttachError(error instanceof Error ? error.message : "终端连接失败，请重试");
     });
     void channel;
 
@@ -127,7 +232,11 @@ export function TerminalPane({ sessionId }: TerminalPaneProps): React.JSX.Elemen
     // 过滤 ANSI 转义序列，避免 escape 混入会话名称
     const stripAnsi = (s: string) => s.replace(/\x1b\[[0-9;]*[A-Za-z]|\x1b\].*?(?:\x07|\x1b\\)|\x1b[()][0-9A-B]|\x1b\[[?]?[0-9;]*[hl]/g, "");
     const dataDisp = term.onData((d) => {
-      void ptyWrite(sessionId, d);
+      void ptyWrite(sessionId, d).catch((error: unknown) => {
+        if (!dead) {
+          setAttachError(error instanceof Error ? error.message : "终端写入失败");
+        }
+      });
       if (!named && pendingSessions.has(sessionId)) {
         if (d.includes("\r") || d.includes("\n")) {
           const trimmed = stripAnsi(inputBuf).trim().slice(0, 80);
@@ -146,10 +255,10 @@ export function TerminalPane({ sessionId }: TerminalPaneProps): React.JSX.Elemen
       }
     });
     const resizeDisp = term.onResize(({ cols, rows }) => {
-      void ptyResize(sessionId, Math.max(2, cols), Math.max(2, rows));
+      void ptyResize(sessionId, Math.max(2, cols), Math.max(2, rows)).catch(() => undefined);
     });
 
-    void ptyResize(sessionId, Math.max(2, term.cols), Math.max(2, term.rows));
+    void ptyResize(sessionId, Math.max(2, term.cols), Math.max(2, term.rows)).catch(() => undefined);
     term.focus();
 
     return () => {
@@ -161,10 +270,75 @@ export function TerminalPane({ sessionId }: TerminalPaneProps): React.JSX.Elemen
     };
   }, [sessionId]);
 
+  useEffect(() => {
+    if (!contextMenu) return;
+    const closeMenu = (): void => setContextMenu(null);
+    const onKeyDown = (event: KeyboardEvent): void => {
+      if (event.key === "Escape") closeMenu();
+    };
+    window.addEventListener("pointerdown", closeMenu);
+    window.addEventListener("blur", closeMenu);
+    window.addEventListener("keydown", onKeyDown);
+    return () => {
+      window.removeEventListener("pointerdown", closeMenu);
+      window.removeEventListener("blur", closeMenu);
+      window.removeEventListener("keydown", onKeyDown);
+    };
+  }, [contextMenu]);
+
+  const copySelection = (): void => {
+    const term = termRef.current;
+    const selection = term?.getSelection() ?? "";
+    setContextMenu(null);
+    if (!term || !selection) return;
+    void copyClipboardText(selection)
+      .then(() => {
+        term.clearSelection();
+        term.focus();
+      })
+      .catch(() => term.focus());
+  };
+
+  const pasteFromMenu = (): void => {
+    setContextMenu(null);
+    pasteRequestRef.current?.();
+  };
+
+  const selectAll = (): void => {
+    setContextMenu(null);
+    const term = termRef.current;
+    term?.selectAll();
+    term?.focus();
+  };
+
   return (
     <div className="term-host">
       <div ref={containerRef} className="term-host-inner" />
       <SearchBar search={search} />
+      {attachError && <div className="term-error" role="alert">{attachError}</div>}
+      {contextMenu && (
+        <div
+          className="term-context-menu"
+          role="menu"
+          style={{ left: contextMenu.x, top: contextMenu.y }}
+          onPointerDown={(event) => event.stopPropagation()}
+        >
+          <button
+            type="button"
+            role="menuitem"
+            disabled={!contextMenu.hasSelection}
+            onClick={copySelection}
+          >
+            复制
+          </button>
+          <button type="button" role="menuitem" onClick={pasteFromMenu}>
+            粘贴
+          </button>
+          <button type="button" role="menuitem" onClick={selectAll}>
+            全选
+          </button>
+        </div>
+      )}
       {sessionId === null && (
         <div className="term-placeholder">
           从菜单打开项目或历史会话

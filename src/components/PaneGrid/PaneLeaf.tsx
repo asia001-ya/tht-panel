@@ -15,6 +15,7 @@ import {
 import { useWorkspaceStore } from "../../store/workspaceStore";
 import { TerminalPane } from "../../terminal/TerminalPane";
 import { parseNativeConversationTabId } from "../../lib/nativeConversation";
+import { ComposerBar } from "../Composer/ComposerBar";
 import { NativeChatPaneHost } from "../Conversation/NativeChatPane";
 import { IconButton } from "../ui/IconButton";
 import {
@@ -75,6 +76,7 @@ function PaneTab({
     <div
       className={`pane-tab${active ? " active" : ""}`}
       title={label}
+      data-pane-drag-ignore
       onClick={(e) => {
         e.stopPropagation();
         setActive(leafId);
@@ -111,7 +113,12 @@ interface PaneLeafProps {
   onClosePane: (leaf: LeafNode) => Promise<void>;
   closingSessionIds: ReadonlySet<string>;
   closingPaneIds: ReadonlySet<string>;
+  draggedLeafId: string | null;
   dropTargetLeafId: string | null;
+  onPanePointerDown: (
+    leafId: string,
+    event: React.PointerEvent<HTMLElement>,
+  ) => void;
   onPaneDragStart: (
     leafId: string,
     event: React.DragEvent<HTMLElement>,
@@ -128,7 +135,8 @@ interface PaneLeafProps {
     leafId: string,
     event: React.DragEvent<HTMLElement>,
   ) => void;
-  onPaneDragEnd: () => void;
+  onPaneDragEnd: (event: React.DragEvent<HTMLElement>) => void;
+  onCreateTerminal?: (workspaceId?: string) => void;
 }
 
 /**
@@ -142,12 +150,15 @@ export function PaneLeaf({
   onClosePane,
   closingSessionIds,
   closingPaneIds,
+  draggedLeafId,
   dropTargetLeafId,
+  onPanePointerDown,
   onPaneDragStart,
   onPaneDragOver,
   onPaneDragLeave,
   onPaneDrop,
   onPaneDragEnd,
+  onCreateTerminal,
 }: PaneLeafProps): React.ReactElement {
   const activePaneId = useLayoutStore((s) => s.activePaneId);
   const activeSavedWorkspaceId = useLayoutStore((s) => s.activeSavedWorkspaceId);
@@ -155,6 +166,7 @@ export function PaneLeaf({
   const toggleLock = useLayoutStore((s) => s.toggleLock);
   const splitPane = useLayoutStore((s) => s.splitPane);
   const renamePane = useLayoutStore((s) => s.renamePane);
+  const restoreError = useLayoutStore((s) => s.restoreErrors[leaf.id]);
   const openTaskDrawer = useTaskStore((state) => state.openDrawer);
   const taskCount = useTaskStore((state) => pendingTaskCount(
     tasksForSavedWorkspace(state.tasks, activeSavedWorkspaceId),
@@ -184,6 +196,7 @@ export function PaneLeaf({
   );
 
   const isActive = activePaneId === leaf.id;
+  const isDragSource = draggedLeafId === leaf.id;
   const isDropTarget = dropTargetLeafId === leaf.id;
   const displayName = leaf.name ?? wsName ?? "未命名";
   const nameErrorId = `pane-name-error-${leaf.id}`;
@@ -214,13 +227,18 @@ export function PaneLeaf({
 
   return (
     <div
-      className={`pane-leaf${isActive ? " pane-active" : ""}${isDropTarget ? " pane-drop-target" : ""}`}
+      className={`pane-leaf${isActive ? " pane-active" : ""}${isDragSource ? " pane-drag-source" : ""}${isDropTarget ? " pane-drop-target" : ""}`}
+      data-pane-leaf-id={leaf.id}
       onClick={() => setActive(leaf.id)}
       onDragOver={(event) => onPaneDragOver(leaf.id, event)}
       onDragLeave={(event) => onPaneDragLeave(leaf.id, event)}
       onDrop={(event) => onPaneDrop(leaf.id, event)}
     >
-      <div className="pane-titlebar">
+      <div
+        className="pane-titlebar"
+        title="拖动标题栏空白处到其他窗格交换位置"
+        onPointerDown={(event) => onPanePointerDown(leaf.id, event)}
+      >
         <span
           className="pane-drag-handle"
           draggable
@@ -348,16 +366,36 @@ export function PaneLeaf({
       </div>
 
       <div className="pane-body">
+        {restoreError && (
+          <div className="pane-restore-error" role="alert">
+            工作区恢复：{restoreError}
+          </div>
+        )}
         {nativeConversationId ? (
           <NativeChatPaneHost conversationId={nativeConversationId} />
         ) : leaf.activeSessionId ? (
           <TerminalPane sessionId={leaf.activeSessionId} />
         ) : (
           <div className="pane-empty">
-            从菜单打开项目会话，或新建终端会话
+            <span>从菜单打开项目会话，或新建终端会话</span>
+            {onCreateTerminal && (
+              <button
+                type="button"
+                className="pane-empty-create"
+                onClick={(event) => {
+                  event.stopPropagation();
+                  onCreateTerminal(wsId ?? undefined);
+                }}
+              >
+                创建终端
+              </button>
+            )}
           </div>
         )}
       </div>
+      {!nativeConversationId && (
+        <ComposerBar leafId={leaf.id} sessionId={leaf.activeSessionId} />
+      )}
     </div>
   );
 }
